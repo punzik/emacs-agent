@@ -150,10 +150,12 @@ live test intentionally used the existing configured Emacs process.
 
 ## Scope and limitations
 
-This is stage 0, not the completed MVP: no project sessions, minibuffer UX,
-metadata policy, persistent history, streaming UI or configurable tool-call
-budget yet. Transport/log buffers remain available for inspection; kill them
-when finished. The universal evaluator captures `princ`, but does not capture
+The spike remains stage 0, not the completed MVP. The separate stage 1
+modules now provide project/global identity, captured context, minibuffer
+input and a queued-turn view (see README), but do not yet call this adapter.
+Metadata history policy, persistent history, streaming UI and configurable
+tool-call budget remain unimplemented. Transport/log buffers remain available
+for inspection; kill them when finished. The universal evaluator captures `princ`, but does not capture
 `message` or backtraces yet. Synchronous Lisp can block the UI. Cancelling does
 not undo changes or stop arbitrary subprocesses. Full evaluation can read
 secrets, change configuration and delete files: trust the model endpoint.

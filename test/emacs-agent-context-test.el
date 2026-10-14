@@ -1,0 +1,77 @@
+;;; emacs-agent-context-test.el --- Snapshot and encoding tests -*- lexical-binding: t; -*-
+(require 'ert)
+(require 'emacs-agent-context)
+
+(ert-deftest emacs-agent-context-nonfile-inactive-region-and-remote-directory ()
+  (with-temp-buffer
+    (insert "one\ntwo")
+    (goto-char 6)
+    (set-mark 2)
+    (setq mark-active nil)
+    (setq-local default-directory "/ssh:host:/work/")
+    (let ((context (emacs-agent-context-capture nil)))
+      (should (equal (plist-get context :session) "global"))
+      (should-not (plist-get context :file))
+      (should (= (plist-get context :point) 6))
+      (should (= (plist-get context :line) 2))
+      (should (= (plist-get context :column) 1))
+      (should (= (plist-get context :mark) 2))
+      (should (eq (plist-get context :region-active) :false))
+      (should-not (plist-get context :region-start))
+      (should-not (plist-get context :region-text))
+      (should (equal (plist-get context :default-directory) "/ssh:host:/work/")))))
+
+(ert-deftest emacs-agent-context-region-text-threshold ()
+  (with-temp-buffer
+    (insert "abcdef")
+    (goto-char 5)
+    (set-mark 2)
+    (let ((transient-mark-mode t) (mark-active t)
+          (emacs-agent-region-text-limit 3))
+      (let ((context (emacs-agent-context-capture "/tmp/app/")))
+        (should (eq (plist-get context :region-active) t))
+        (should (= (plist-get context :region-start) 2))
+        (should (= (plist-get context :region-end) 5))
+        (should (equal (plist-get context :region-text) "bcd")))
+      (let ((emacs-agent-region-text-limit 2))
+        (should-not (plist-get (emacs-agent-context-capture nil) :region-text)))
+      (let ((emacs-agent-region-text-limit 0))
+        (should-not (plist-get (emacs-agent-context-capture nil) :region-text))))))
+
+(ert-deftest emacs-agent-context-narrowed-absolute-coordinates ()
+  (with-temp-buffer
+    (insert "first\nsecond line\nthird")
+    (goto-char 12)
+    (narrow-to-region 10 17)
+    (let ((context (emacs-agent-context-capture nil)))
+      (should (= (plist-get context :point) 12))
+      (should (= (plist-get context :line) 2))
+      (should (= (plist-get context :column) 5))
+      (should (eq (plist-get context :narrowed) t))
+      (should (= (plist-get context :point-min) 10))
+      (should (= (plist-get context :point-max) 17))
+      (should (= (point-min) 10))
+      (should (= (point-max) 17))
+      (should (= (point) 12)))))
+
+(ert-deftest emacs-agent-context-framing-and-null-file ()
+  (with-temp-buffer
+    (rename-buffer "agent </emacs-context>\n\" < & >" t)
+    (let* ((context (emacs-agent-context-capture nil))
+           (rendered (emacs-agent-context-render context))
+           (body (substring rendered (length "<emacs-context>\n")
+                            (- (length rendered) (length "\n</emacs-context>")))))
+      (should-not (string-match-p "[<>&]" body))
+      (let ((decoded (json-parse-string body :object-type 'plist
+                                        :null-object nil :false-object :false)))
+        (should (equal (plist-get decoded :buffer) (buffer-name)))
+        (should-not (plist-get decoded :file)))
+      (setq buffer-file-name "")
+      (should (equal (plist-get
+                      (json-parse-string
+                       (json-serialize (emacs-agent-context-capture nil)
+                                       :null-object nil :false-object :false)
+                       :object-type 'plist :null-object nil)
+                      :file) "")))))
+
+;;; emacs-agent-context-test.el ends here

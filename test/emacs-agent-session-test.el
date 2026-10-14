@@ -1,0 +1,135 @@
+;;; emacs-agent-session-test.el --- Session and UX tests -*- lexical-binding: t; -*-
+(require 'ert)
+(require 'emacs-agent)
+
+(defmacro emacs-agent-test-with-registry (&rest body)
+  "Run BODY with an isolated registry; clean up created journal buffers."
+  (declare (indent 0) (debug t))
+  `(let ((emacs-agent-session--registry (make-hash-table :test #'equal))
+         (emacs-agent-session--counter 0))
+     (unwind-protect (progn ,@body)
+       (maphash (lambda (_key session)
+                  (when (buffer-live-p (emacs-agent-session-log-buffer session))
+                    (kill-buffer (emacs-agent-session-log-buffer session))))
+                emacs-agent-session--registry))))
+
+(ert-deftest emacs-agent-session-global-and-project-identities ()
+  (emacs-agent-test-with-registry
+    (let (first)
+      (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil)))
+        (with-temp-buffer
+          (setq first (emacs-agent-session-get (emacs-agent-session-resolve-root))))
+        (with-temp-buffer
+          (should (eq first (emacs-agent-session-get (emacs-agent-session-resolve-root))))))
+      (let* ((a (emacs-agent-session-get "/tmp/one/app/"))
+             (b (emacs-agent-session-get "/tmp/two/app/")))
+        (should-not (eq a b))
+        (should (eq a (emacs-agent-session-get "/tmp/one/app/")))
+        (should-not (equal (emacs-agent--session-name a) (emacs-agent--session-name b)))))))
+
+(ert-deftest emacs-agent-session-canonical-and-remote-roots ()
+  (cl-letf (((symbol-function 'project-current) (lambda (&rest _) 'test-project))
+            ((symbol-function 'project-root) (lambda (_) "/tmp/alias/../alias"))
+            ((symbol-function 'file-truename) (lambda (_) "/tmp/real/")))
+    (should (equal (emacs-agent-session-resolve-root) "/tmp/real/")))
+  (cl-letf (((symbol-function 'project-current) (lambda (&rest _) 'test-project))
+            ((symbol-function 'project-root) (lambda (_) "/tmp/unavailable"))
+            ((symbol-function 'file-truename) (lambda (_) (signal 'file-error '("unavailable")))))
+    (should (equal (emacs-agent-session-resolve-root) "/tmp/unavailable/")))
+  (cl-letf (((symbol-function 'project-current) (lambda (&rest _) 'test-project))
+            ((symbol-function 'project-root) (lambda (_) "/ssh:host:/work/app/"))
+            ((symbol-function 'file-truename) (lambda (_) (ert-fail "Remote truename called"))))
+    (should (equal (emacs-agent-session-resolve-root) "/ssh:host:/work/app/"))))
+
+(ert-deftest emacs-agent-session-files-in-one-project ()
+  (emacs-agent-test-with-registry
+    (let (first)
+      (cl-letf (((symbol-function 'project-current) (lambda (&rest _) 'test-project))
+                ((symbol-function 'project-root) (lambda (_) "/tmp/app/"))
+                ((symbol-function 'file-truename) #'identity))
+        (dolist (file '("/tmp/app/a.el" "/tmp/app/b.el"))
+          (with-temp-buffer
+            (setq buffer-file-name file)
+            (let ((session (emacs-agent-session-get (emacs-agent-session-resolve-root))))
+              (if first (should (eq first session)) (setq first session)))))))))
+
+(ert-deftest emacs-agent-ask-captures-before-input-and-queues-fifo ()
+  (emacs-agent-test-with-registry
+    (let ((other (generate-new-buffer " *agent-other-project*"))
+          (emacs-agent-prompt-history nil)
+          first second session)
+      (unwind-protect
+          (with-temp-buffer
+            (insert "first\nsecond\n")
+            (goto-char 7)
+            (setq-local default-directory "/tmp/original/")
+            (cl-letf (((symbol-function 'emacs-agent-session-resolve-root)
+                       (lambda () "/tmp/original/"))
+                      ((symbol-function 'read-from-minibuffer)
+                       (lambda (_prompt _initial map _read history)
+                         (should (eq map emacs-agent-minibuffer-map))
+                         (should (eq history 'emacs-agent-prompt-history))
+                         (goto-char (point-max))
+                         (set-buffer other)
+                         "first user\nline")))
+              (setq first (emacs-agent-ask)))
+            (setq session (emacs-agent-run-session first))
+            (should (equal (emacs-agent-session-project-root session) "/tmp/original/"))
+            (should (= (plist-get (emacs-agent-run-editor-context first) :point) 7))
+            (should (equal (emacs-agent-run-user-text first) "first user\nline"))
+            (goto-char 3)
+            (cl-letf (((symbol-function 'emacs-agent-session-resolve-root)
+                       (lambda () "/tmp/original/"))
+                      ((symbol-function 'read-from-minibuffer) (lambda (&rest _) "second")))
+              (setq second (emacs-agent-ask)))
+            (should (eq session (emacs-agent-run-session second)))
+            (should (equal (emacs-agent-session-pending-runs session) (list first second)))
+            (should (= (plist-get (emacs-agent-run-editor-context second) :point) 3))
+            (should (= (plist-get (emacs-agent-run-editor-context first) :point) 7)))
+        (kill-buffer other)))))
+
+(ert-deftest emacs-agent-ask-empty-and-aborted-input ()
+  (emacs-agent-test-with-registry
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'emacs-agent-session-resolve-root) (lambda () nil))
+                ((symbol-function 'read-from-minibuffer) (lambda (&rest _) " \n\t ")))
+        (should-not (emacs-agent-ask))
+        (should (= (hash-table-count emacs-agent-session--registry) 0)))
+      (cl-letf (((symbol-function 'emacs-agent-session-resolve-root) (lambda () nil))
+                ((symbol-function 'read-from-minibuffer) (lambda (&rest _) (signal 'quit nil))))
+        (should (eq (condition-case nil (emacs-agent-ask) (quit 'quit)) 'quit))
+        (should (= (hash-table-count emacs-agent-session--registry) 0))))))
+
+(ert-deftest emacs-agent-journal-uses-owner-and-source ()
+  (emacs-agent-test-with-registry
+    (let ((source (generate-new-buffer " *agent-source*")))
+      (unwind-protect
+          (let* ((session (emacs-agent-session-get "/tmp/app/"))
+                 (journal (emacs-agent--log-buffer session)))
+            (setf (emacs-agent-session-last-source-buffer session) source)
+            (with-current-buffer journal
+              (cl-letf (((symbol-function 'emacs-agent-session-resolve-root)
+                         (lambda () (ert-fail "Resolved project from journal")))
+                        ((symbol-function 'read-from-minibuffer) (lambda (&rest _) "journal prompt")))
+                (let ((run (emacs-agent-ask)))
+                  (should (eq (emacs-agent-run-session run) session))
+                  (should (eq (emacs-agent-run-source-buffer run) source))))
+              (should buffer-read-only)
+              (should-error (insert "manual") :type 'buffer-read-only)
+              (should-not (string-match-p "emacs-context" (buffer-string))))
+            (kill-buffer source)
+            (with-current-buffer journal
+              (should-error (emacs-agent-ask) :type 'user-error)
+              (cl-letf (((symbol-function 'display-buffer) #'ignore))
+                (emacs-agent-show))))
+        (when (buffer-live-p source) (kill-buffer source))))))
+
+(ert-deftest emacs-agent-minibuffer-map-contract ()
+  (should (eq (lookup-key emacs-agent-minibuffer-map (kbd "RET")) 'exit-minibuffer))
+  (should (eq (lookup-key emacs-agent-minibuffer-map (kbd "C-j")) 'newline))
+  (should (eq (lookup-key emacs-agent-minibuffer-map (kbd "M-p")) 'previous-history-element))
+  (should (eq (lookup-key emacs-agent-minibuffer-map (kbd "M-n")) 'next-history-element))
+  (should (eq (lookup-key emacs-agent-minibuffer-map (kbd "C-g"))
+              (lookup-key minibuffer-local-map (kbd "C-g")))))
+
+;;; emacs-agent-session-test.el ends here
