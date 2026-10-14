@@ -84,9 +84,10 @@ Responses API / Anthropic opaque reasoning and replay have **not** been
 validated for persistence. Do not discard reasoning signatures or replay
 provider-specific data as plain text.
 
-Before shipping sessions/persistence, isolate the experimental history format
-in one adapter and test nil/current/full metadata filtering with multi-call
-continuations. Keep user text, context and provider protocol history separate.
+Stage 2 isolates the experimental history format in `emacs-agent-gptel.el`
+and tests nil/current/full metadata filtering without mutating stored records.
+Tool continuations retain the current turn's initial request data. Before
+shipping persistence, extend coverage across actual backend-specific replay. Keep user text, context and provider protocol history separate.
 If opaque history cannot be faithfully replayed, fail explicitly rather than
 silently sending broken tool linkage.
 
@@ -148,14 +149,56 @@ The transcript remains in `*emacs-agent-spike*<2>` for inspection.
 Credentials were not read. Batch tests did not load user configuration; the
 live test intentionally used the existing configured Emacs process.
 
+## Stage 2 live validation
+
+`emacs-agent-gptel.el` now consumes the session FIFO from `emacs-agent-ask`.
+Its history builder, provider-ID pairing and callback dispatch isolate the
+experimental contracts. Each run captures its source buffer's gptel backend
+and model at submission and uses a separate buffer-local transport.
+
+On 2026-10-14, the complete adapter was tested in the running Emacs against
+`aiserver` / `main`. Two calls to `emacs-agent-ask` were made with only prompt
+input stubbed (no interactive minibuffer interruption):
+
+1. First turn asked for two separate tool calls: insert `STAGE2`, then read it.
+2. Second turn was enqueued while the first was active, asking to report the
+   prior result using history and no tools.
+3. A budget of one paused the first run before its second evaluation. The
+   source contained `STAGE2`, first status was `paused`, second was `queued`.
+4. Resume delivered the held continuation without retry: tool count became
+   two, first completed, and the queued turn started automatically.
+5. Both runs completed. Both final answers correctly reported `"STAGE2"`,
+   proving real paired tool-history replay into the next user turn.
+
+The journal is `*emacs-agent: global*`, source is
+`*emacs-agent-stage2-smoke*`. API keys were not read. No files or shell commands
+were accessed by the model. The full batch suite now has 28 passing tests,
+including FIFO, independent sessions, duplicate/late callbacks, failure,
+source-buffer fallback, pause/resume, self-cancellation result retention and
+non-overlapping tool evaluation. Additional regressions cover empty successful
+responses, renderer quit and disabled user response tracking. Compilation
+passes with warnings as errors.
+
+Final-run completion is observed through request-local FSM terminal handlers,
+not inferred from presence of assistant text: gptel can suppress a text
+callback for an empty successful response. The private handler table preserves
+gptel's handlers and adds DONE/ERRS/ABRT observation; globals are untouched.
+Terminal state names and FSM slot access are pinned integration contracts.
+The transport locally enables `gptel-track-response` so explicit assistant/tool
+roles survive even when the user's unrelated global preference disables it.
+After these fixes, another live run with source `gptel-track-response` bound
+to nil read `STAGE2` in one call, reported the actual result, reached
+`completed`, and released `active-run` to nil. Transport tracking was t; the
+source preference was not changed.
+
 ## Scope and limitations
 
-The spike remains stage 0, not the completed MVP. The separate stage 1
-modules now provide project/global identity, captured context, minibuffer
-input and a queued-turn view (see README), but do not yet call this adapter.
-Metadata history policy, persistent history, streaming UI and configurable
-tool-call budget remain unimplemented. Transport/log buffers remain available
-for inspection; kill them when finished. The universal evaluator captures `princ`, but does not capture
+The original spike remains stage 0. The main package is stage 2, not the
+completed MVP: non-streaming requests, sessions/context, basic event journal,
+FIFO/cancellation/tool budget and plain-text/paired-tool history are active.
+Persistence, rich streaming UI and opaque provider-history replay remain
+unimplemented. Transport/log buffers remain available for inspection; kill
+them when finished. The universal evaluator captures `princ`, but does not capture
 `message` or backtraces yet. Synchronous Lisp can block the UI. Cancelling does
 not undo changes or stop arbitrary subprocesses. Full evaluation can read
 secrets, change configuration and delete files: trust the model endpoint.

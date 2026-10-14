@@ -3,9 +3,9 @@
 An Emacs Lisp agent using gptel and one unrestricted `eval_elisp` tool in the
 live editor. Project identities separate conversations, not editor access.
 
-**Status: stage 1 (sessions/context/input), not the finished MVP.**
-`emacs-agent-ask` currently queues turns only: it does not send LLM requests.
-The separate stage-zero spike can still run real gptel tool loops.
+**Status: stage 2 (non-streaming run lifecycle), not the finished MVP.**
+`emacs-agent-ask` now sends through your configured gptel backend/model.
+Turns are FIFO within a session; different sessions can request concurrently.
 
 - Specification: [docs/EMACS_AGENT_SPEC.md](docs/EMACS_AGENT_SPEC.md)
 - Tested gptel baseline, integration decisions, risks and manual smoke test:
@@ -13,11 +13,11 @@ The separate stage-zero spike can still run real gptel tool loops.
 - Prototype: `examples/emacs-agent-spike.el`
 - Reusable evaluator: `emacs-agent-eval.el`
 
-Next: connect the session FIFO to the gptel adapter with cancellation and
-limits (stage 2), then event/streaming UI, context-history policies and
-persistence. No global keybindings or user gptel configuration are changed.
+Next: streaming/event UI (stage 3), then complete history-policy/replay
+validation and persistence. No global keybindings or user gptel configuration
+are changed. The adapter uses the pinned gptel revision documented below.
 
-## Stage 1 usage
+## Usage
 
 ```elisp
 (add-to-list 'load-path "/path/to/emacs-ai-agent")
@@ -34,7 +34,9 @@ appropriate session. `RET` submits, `C-j` inserts newline, `C-g` aborts;
 nor queues a turn. Multiline input uses the ordinary Emacs minibuffer.
 
 `M-x emacs-agent-show` lazily creates/shows the corresponding read-only session
-view. It currently lists queued user text, not a full event transcript.
+view. It shows user/assistant text, supplied reasoning, tool calls/results and
+run statuses. This is a basic non-streaming renderer; context metadata is kept
+separate from displayed user text.
 Two non-project buffers share the global session; files in one project share
 its canonical root key. Symlinked local roots are resolved when possible;
 remote roots are never locally canonicalized. Same-basename projects remain
@@ -51,10 +53,29 @@ longer selections retain only bounds. No full buffer is captured. Context is
 serializable framed JSON, escaped so buffer names/region text cannot forge
 section delimiters; it never appears as part of displayed user text.
 
-`emacs-agent-context-history` is declared with default `current`, but API
-history filtering is not active until stage 4. Sessions and queues currently
-last only for the Emacs process lifetime. Cancel/save/session-list commands
-and streaming are not implemented yet.
+`emacs-agent-context-history` defaults to `current`: only the active user
+turn's snapshot is sent, including every tool continuation. `full` includes
+all user snapshots; nil sends no automatic context. Tool arguments/results
+and assistant/user text are never removed by this policy. Basic filtering is
+already active; opaque provider reasoning/history replay remains a stage 4
+validation item (reasoning is currently journal-only).
+
+`M-x emacs-agent-cancel` cancels the active run in the current session and
+allows the next queued turn to start. Late callbacks are ignored; prior Lisp
+side effects remain. There are no automatic retries of network requests or
+side-effecting evaluations.
+
+`emacs-agent-max-tool-calls` defaults to 100. At the limit the run pauses before
+the next evaluation and holds pending continuations. `M-x emacs-agent-resume`
+grants another block of calls without restarting the request or reexecuting
+completed tools. Paused runs retain their session slot until resumed/cancelled.
+All tool evaluation is serialized across sessions, including during recursive
+Emacs event loops. Tools default to the live source buffer, or the run's
+transport if it died; windows and captured point/region are not restored.
+
+Sessions/queues currently last only for the Emacs process lifetime.
+Save/session-list commands, streaming and transport-buffer reclamation are
+not implemented yet.
 
 The tested Emacs 30.2 has no built-in `edit-minibuffer` command; no fictitious
 `C-M-c` binding or custom editor is supplied. Existing user minibuffer editing
@@ -64,7 +85,7 @@ separate buffer remains a UX integration item for later polishing.
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 16 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 28 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh

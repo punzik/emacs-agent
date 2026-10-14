@@ -7,7 +7,12 @@
   (declare (indent 0) (debug t))
   `(let ((emacs-agent-session--registry (make-hash-table :test #'equal))
          (emacs-agent-session--counter 0))
-     (unwind-protect (progn ,@body)
+     (unwind-protect
+         (cl-letf (((symbol-function 'emacs-agent-gptel-submit)
+                    (lambda (run)
+                      (emacs-agent-session-record run 'queued (emacs-agent-run-user-text run))
+                      run)))
+           ,@body)
        (maphash (lambda (_key session)
                   (when (buffer-live-p (emacs-agent-session-log-buffer session))
                     (kill-buffer (emacs-agent-session-log-buffer session))))

@@ -15,7 +15,8 @@
 
 (cl-defstruct emacs-agent-run
   id session user-text editor-context source-buffer source-window
-  (status 'queued) request-handle
+  (status 'queued) request-handle transport-buffer backend model
+  (tool-count 0) tool-budget pending-tools
   (tool-call-ids (make-hash-table :test #'equal)))
 
 (defvar emacs-agent-session--registry (make-hash-table :test #'equal)
@@ -67,7 +68,7 @@ This function does not create a session."
 
 (defun emacs-agent-session-enqueue (session text context source window)
   "Queue TEXT and captured CONTEXT in SESSION with SOURCE and WINDOW.
-This stage only queues turns; the stage 2 adapter will consume the FIFO."
+The adapter consumes the FIFO without recapturing editor context."
   (let ((run (make-emacs-agent-run
               :id (format "run-%d" (cl-incf emacs-agent-session--counter))
               :session session :user-text text :editor-context context
@@ -77,6 +78,29 @@ This stage only queues turns; the stage 2 adapter will consume the FIFO."
           (emacs-agent-session-pending-runs session)
           (nconc (emacs-agent-session-pending-runs session) (list run)))
     run))
+
+(defvar emacs-agent-session-event-functions nil
+  "Functions called with SESSION and EVENT after a structured event is recorded.")
+
+(defun emacs-agent-session-record (run type payload &optional model-message)
+  "Record TYPE and serializable PAYLOAD for RUN.
+If MODEL-MESSAGE is supplied, append it to the separate canonical API history.
+The rendered journal is never used to reconstruct that history."
+  (let* ((session (emacs-agent-run-session run))
+         (event (list :id (format "event-%d" (cl-incf emacs-agent-session--counter))
+                      :time (float-time) :session-id (emacs-agent-session-id session)
+                      :run-id (emacs-agent-run-id run) :type type :payload payload)))
+    (when model-message
+      (setf (emacs-agent-session-messages session)
+            (nconc (emacs-agent-session-messages session) (list model-message))))
+    (setf (emacs-agent-session-events session)
+          (nconc (emacs-agent-session-events session) (list event))
+          (emacs-agent-session-updated-at session) (plist-get event :time))
+    ;; A broken renderer must not lose tool results or strand the network loop.
+    (condition-case err
+        (run-hook-with-args 'emacs-agent-session-event-functions session event)
+      ((error quit) (message "Emacs Agent event renderer: %s" (error-message-string err))))
+    event))
 
 (provide 'emacs-agent-session)
 ;;; emacs-agent-session.el ends here
