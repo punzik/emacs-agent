@@ -3,9 +3,9 @@
 (require 'emacs-agent)
 (require 'emacs-agent-gptel)
 
-(defvar emacs-agent-test--runs)
-(defvar emacs-agent-test--requests)
-(defvar emacs-agent-test--real-request)
+(defvar emacs-agent-test--runs nil)
+(defvar emacs-agent-test--requests nil)
+(defvar emacs-agent-test--real-request nil)
 
 (defmacro emacs-agent-test-adapter (&rest body)
   "Run BODY with mocked HTTP entry point and real gptel tool objects."
@@ -27,7 +27,8 @@
                     (lambda (prompt &rest keys)
                       (push (list :prompt prompt :callback (plist-get keys :callback)
                                   :buffer (plist-get keys :buffer)
-                                  :stream (plist-get keys :stream)) emacs-agent-test--requests)
+                                  :stream (plist-get keys :stream)
+                                  :transforms (plist-get keys :transforms)) emacs-agent-test--requests)
                       'mock-request))
                    ((symbol-function 'gptel-abort) #'ignore))
            ,@body)
@@ -220,7 +221,7 @@ Mock only the gptel dispatch callback tuples, including their reversed order."
                (messages (copy-tree (emacs-agent-session-messages session))))
           (dolist (policy '(nil current full))
             (let* ((emacs-agent-context-history policy)
-                   (history (emacs-agent-gptel--history second))
+                   (history (emacs-agent-gptel--history second policy))
                    (tool (nth 1 history)))
               (should (eq (car tool) 'tool))
               (should (equal (plist-get (cdr tool) :id) "id-1"))

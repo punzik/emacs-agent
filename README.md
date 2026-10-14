@@ -3,8 +3,8 @@
 An Emacs Lisp agent using gptel and one unrestricted `eval_elisp` tool in the
 live editor. Project identities separate conversations, not editor access.
 
-**Status: stage 3 (streaming and incremental journal), not the finished MVP.**
-`emacs-agent-ask` now sends through your configured gptel backend/model.
+**Status: stage 4 (validated Chat Completions replay), not the finished MVP.**
+`emacs-agent-ask` sends through your configured Chat Completions backend/model.
 Turns are FIFO within a session; different sessions can request concurrently.
 
 - Specification: [docs/EMACS_AGENT_SPEC.md](docs/EMACS_AGENT_SPEC.md)
@@ -13,7 +13,7 @@ Turns are FIFO within a session; different sessions can request concurrently.
 - Prototype: `examples/emacs-agent-spike.el`
 - Reusable evaluator: `emacs-agent-eval.el`
 
-Next: complete history-policy/replay validation (stage 4), then persistence. No global keybindings or user gptel configuration
+Next: persistence (stage 5). No global keybindings or user gptel configuration
 are changed. The adapter uses the pinned gptel revision documented below.
 
 ## Usage
@@ -34,8 +34,8 @@ nor queues a turn. Multiline input uses the ordinary Emacs minibuffer.
 
 `M-x emacs-agent-show` lazily creates/shows the corresponding read-only session
 view. It shows user/assistant text, supplied reasoning, tool calls/results and
-run statuses. `emacs-agent-stream` defaults to t; unsupported backends may
-return a single response, and nil requests non-streaming. Supplied reasoning
+run statuses. `emacs-agent-stream` defaults to t; supported backends without
+streaming may return a single response, and nil requests non-streaming. Supplied reasoning
 is streamed as received, never reconstructed. Context metadata is kept
 separate from displayed user text.
 
@@ -73,9 +73,33 @@ section delimiters; it never appears as part of displayed user text.
 `emacs-agent-context-history` defaults to `current`: only the active user
 turn's snapshot is sent, including every tool continuation. `full` includes
 all user snapshots; nil sends no automatic context. Tool arguments/results
-and assistant/user text are never removed by this policy. Basic filtering is
-already active; opaque provider reasoning/history replay remains a stage 4
-validation item (reasoning is currently journal-only).
+and assistant/user text are never removed by this policy. Policy is frozen at
+submission, so queued runs and their tool continuations cannot switch modes
+mid-turn. Filtering never mutates stored snapshots or history records.
+Ambient gptel prompt transforms and chat UI history truncation are disabled
+for the private transport only; user's gptel settings/hooks are unchanged.
+
+### Replay support boundary
+
+Currently supported: trusted **OpenAI Chat Completions** configurations using
+plain text, `eval_elisp` function calls and optional textual `reasoning` /
+`reasoning_content` on assistant tool messages. These fields are retained and
+restored to generated wire messages, along with original provider call IDs.
+Final answer reasoning without a tool call remains journal-only.
+
+Responses API, Anthropic, Gemini and other backend types fail before sending
+a request: their opaque reasoning/signature formats are not safely replayable
+through this gptel adapter. Observed unknown assistant/tool protocol fields,
+signatures, encrypted data or callback shapes also fail explicitly, before
+tool execution. That session receives a non-replayable history marker; future
+turns fail rather than silently omit unsupported data. There is no reset UI
+yet: use a fresh session/process after such a failure.
+
+This is not a universal detector for proprietary Chat extensions: upstream
+gptel can discard unrecognized streaming fields before exposing them. Use
+only endpoints whose protocol fits the stated support boundary; arbitrary
+OpenAI-compatible vendors with hidden/opaque requirements are not supported.
+Known textual tool reasoning is preserved; opaque blobs are not reconstructed.
 
 `M-x emacs-agent-cancel` cancels the active run in the current session and
 allows the next queued turn to start. Late callbacks are ignored; prior Lisp
@@ -102,7 +126,7 @@ separate buffer remains a UX integration item for later polishing.
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 38 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 45 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh

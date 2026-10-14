@@ -87,7 +87,8 @@ provider-specific data as plain text.
 Stage 2 isolates the experimental history format in `emacs-agent-gptel.el`
 and tests nil/current/full metadata filtering without mutating stored records.
 Tool continuations retain the current turn's initial request data. Before
-shipping persistence, extend coverage across actual backend-specific replay. Keep user text, context and provider protocol history separate.
+shipping persistence, extend coverage across actual backend-specific replay.
+Keep user text, context and provider protocol history separate.
 If opaque history cannot be faithfully replayed, fail explicitly rather than
 silently sending broken tool linkage.
 
@@ -231,13 +232,86 @@ append, folding, close/reopen replay and separate reader/follower windows.
 Window point/start preservation is tested in batch; pixel-scroll and wrapped
 line redisplay are not exhaustively verified across GUI configurations.
 
+## Stage 4 protocol contracts and live validation
+
+The replay boundary is now explicit: only `gptel-openai` Chat Completions
+backends are supported. Responses API (`gptel-openai-responses`), Anthropic,
+Gemini and other backend structs fail before network submission. Their
+signatures/encrypted reasoning are not safely represented by the experimental
+list history API. Backend constructor name alone is insufficient: the default
+OpenAI host selects Responses even with a supplied chat endpoint.
+
+Inspected Chat parsing preserves original assistant tool messages in
+`:data :messages`; streaming can carry `:reasoning` or `:reasoning_content`.
+These known textual fields are copied into canonical tool records and restored
+before every WAIT handler sends the generated data. Reasoning without tool
+calls remains journal-only. Unknown assistant/tool/function fields and observed
+opaque INFO fields cause explicit failure and a non-replayable history marker;
+future turns are blocked rather than replaying an incomplete transcript.
+No opaque contents are logged/reconstructed, only the failure's field name.
+
+This does **not** guarantee detection of proprietary extensions that upstream
+gptel already discarded, especially unknown streaming delta fields. Such
+endpoints are outside the supported plain/text-reasoning Chat contract.
+
+Another pinned behavior discovered by actual dry-run tests:
+`gptel--openai-format-tool-id` prepends `call_` to some provider IDs. The
+request-local WAIT adapter restores original IDs in both assistant calls and
+tool results and restores known reasoning fields. Formatted-ID collisions,
+duplicate calls, malformed records, unknown protocol fields and cross-turn
+records are rejected by validation before sending. Known call indices restore
+streaming batch execution order: its parser otherwise reverses `:tool-use`.
+
+Policy is frozen at submission. Stored snapshots remain immutable while the
+wire builder filters only editor metadata. Private transports disable gptel
+chat UI truncation and use `:transforms '(ignore)` to avoid ambient transforms
+adding/removing context. Global settings/hooks remain unchanged.
+
+Live validation on 2026-10-14 used the opt-in fixture in
+`test/manual-history-smoke.el` with `aiserver` / `main`. Three FIFO turns with
+nil/current/full each completed two tool calls, using only `(+ 20 22)` and
+`(buffer-name)`. An earlier synthetic user snapshot seeded the fresh fixture.
+Outgoing messages were copied after replay restoration and before HTTP dispatch
+(no keys, backend objects or headers):
+
+| Policy | Context blocks on successive requests | Completed tools |
+|---|---|---|
+| nil | 0, 0 | 2 |
+| current | 1, 1, 1 | 2 |
+| full | 4, 4 | 2 |
+
+Some responses batched both tools, so not every run needed three requests.
+Every observed tool result matched an earlier assistant call ID. All six tool
+records retained textual protocol reasoning, and later turns replayed it.
+Full included the seed plus all three captured user turns, including metadata
+that earlier nil/current policies did not send. The observer advice was removed
+after the test; no global gptel hooks were installed or changed.
+
+Optional reproduction in a trusted configured Emacs:
+
+```elisp
+(load "/path/to/emacs-ai-agent/test/manual-history-smoke.el")
+(emacs-agent-history-smoke-start)
+;; After all `emacs-agent-history-smoke-runs' are terminal, inspect
+;; `emacs-agent-history-smoke-requests', then always remove the observer:
+(emacs-agent-history-smoke-stop-observer)
+```
+
+45 ERT tests and warning-as-error compilation pass. New tests use actual gptel
+parsing, dispatch and dry-run serialization to verify policies, original IDs,
+arguments/results and textual reasoning; additional regressions cover frozen
+policy, transform/truncation isolation, unsupported backend preflight, opaque
+field poisoning, nested signatures and streaming batch order. Other providers
+are deliberately rejected, not claimed to have been integration-tested.
+
 ## Scope and limitations
 
-The original spike remains stage 0. The main package is stage 3, not the
+The original spike remains stage 0. The main package is stage 4, not the
 completed MVP: streaming requests, sessions/context, incremental/foldable
 journal, FIFO/cancellation/tool budget and plain-text/paired-tool history
-are active. Persistence and opaque provider-history replay remain
-unimplemented. Transport/log buffers remain available for inspection; kill
+are active. Supported Chat replay includes known textual tool reasoning.
+Persistence and opaque provider-history replay remain unimplemented; unsupported
+protocols fail explicitly. Transport/log buffers remain available for inspection; kill
 them when finished. The universal evaluator captures `princ`, but does not capture
 `message` or backtraces yet. Synchronous Lisp can block the UI. Cancelling does
 not undo changes or stop arbitrary subprocesses. Full evaluation can read
