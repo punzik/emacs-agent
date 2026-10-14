@@ -8,6 +8,8 @@ live editor. Project identities separate conversations, not editor access.
 Turns are FIFO within a session; different sessions can request concurrently.
 
 - Specification: [docs/EMACS_AGENT_SPEC.md](docs/EMACS_AGENT_SPEC.md)
+- Pi/Pigo research and proposed post-MVP implementation plan:
+  [docs/POST_MVP_ROADMAP.md](docs/POST_MVP_ROADMAP.md)
 - Tested gptel baseline, integration decisions, risks and manual smoke test:
   [docs/GPTEL_INTEGRATION.md](docs/GPTEL_INTEGRATION.md)
 - Prototype: `examples/emacs-agent-spike.el`
