@@ -91,8 +91,9 @@ shipping persistence, extend coverage across actual backend-specific replay. Kee
 If opaque history cannot be faithfully replayed, fail explicitly rather than
 silently sending broken tool linkage.
 
-Streaming callback forms were confirmed from source, not yet live-tested.
-Non-streaming reasoning callbacks were also observed with the real local LLM. Final-run detection needs its own tested lifecycle adapter; do not
+Streaming callback forms were confirmed from source and live-tested in stage 3
+(text chunks, supplied reasoning and per-response completion). Final-run
+completion is determined by the request-local FSM lifecycle adapter; do not
 mistake a per-HTTP streaming `t` for the end of a tool loop. Existing tool hooks
 must not be globally overwritten. Backend/model should be captured from the
 source buffer on each new run and kept local to its transport buffer.
@@ -191,12 +192,51 @@ to nil read `STAGE2` in one call, reported the actual result, reached
 `completed`, and released `active-run` to nil. Transport tracking was t; the
 source preference was not changed.
 
+## Stage 3 streaming and journal validation
+
+The main adapter now requests streaming by default (`emacs-agent-stream`),
+while preserving single-response fallback. Each assistant chunk is a display
+event; one assembled assistant message is committed at HTTP completion,
+before tool dispatch, or on terminal/error/cancel. `(reasoning . t)` ends a
+reasoning section, and plain `t` flushes one HTTP response, **not** the run.
+Already received partial text survives cancellation; late chunks are ignored.
+Reasoning remains journal-only until opaque replay is validated.
+
+`emacs-agent-log.el` renders only unconsumed event-list entries, appending
+adjacent text chunks into marker-delimited sections. Tool/reasoning bodies
+use folding overlays and clickable headers. Folding is view-only. Reader
+points, window starts and pixel vscroll are preserved; only end-of-buffer
+followers advance. Closing the view does not cancel or resurrect it; showing
+it again replays retained events. No callback selects a user window.
+
+Live test on 2026-10-14 with `aiserver` / `main` confirmed effective streaming:
+
+- Two separate calls, `(+ 20 22)` and `(buffer-name)`, completed successfully.
+- The run received 16 assistant deltas and 46 provider-supplied reasoning
+  deltas and reached `completed`, with actual results in the final response.
+- A second run's journal was killed while its status was `requesting`; the
+  run still completed its `(buffer-name)` call and final response, and the
+  journal stayed closed throughout callbacks.
+- Explicit rendering recreated the read-only `emacs-agent-log-mode` view,
+  with assembled text, foldable sections and the retained final answers.
+
+Source: `*emacs-agent-stage3-smoke*`; journal:
+`*emacs-agent: emacs-ai-agent#c576c13636*`. No files, shell or buffer edits
+were requested from the model. Input was stubbed, not the live transport.
+
+38 ERT tests pass and compilation remains warning-free. New tests cover
+chunk assembly across tool iterations, HTTP-vs-run completion, supplied
+reasoning, partial cancellation/error, non-streaming fallback, incremental
+append, folding, close/reopen replay and separate reader/follower windows.
+Window point/start preservation is tested in batch; pixel-scroll and wrapped
+line redisplay are not exhaustively verified across GUI configurations.
+
 ## Scope and limitations
 
-The original spike remains stage 0. The main package is stage 2, not the
-completed MVP: non-streaming requests, sessions/context, basic event journal,
-FIFO/cancellation/tool budget and plain-text/paired-tool history are active.
-Persistence, rich streaming UI and opaque provider-history replay remain
+The original spike remains stage 0. The main package is stage 3, not the
+completed MVP: streaming requests, sessions/context, incremental/foldable
+journal, FIFO/cancellation/tool budget and plain-text/paired-tool history
+are active. Persistence and opaque provider-history replay remain
 unimplemented. Transport/log buffers remain available for inspection; kill
 them when finished. The universal evaluator captures `princ`, but does not capture
 `message` or backtraces yet. Synchronous Lisp can block the UI. Cancelling does

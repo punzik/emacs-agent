@@ -1,7 +1,7 @@
 ;;; emacs-agent-gptel.el --- Run lifecycle and gptel adapter -*- lexical-binding: t; -*-
 
 ;;; Commentary:
-;; Non-streaming stage 2 adapter.  Experimental gptel history/ID contracts
+;; Streaming run adapter.  Experimental gptel history/ID contracts
 ;; are isolated here; no gptel hooks or global selected tools are changed.
 
 ;;; Code:
@@ -10,6 +10,11 @@
 (require 'emacs-agent-context)
 
 (defvar emacs-agent-system-prompt)
+
+(defcustom emacs-agent-stream t
+  "Request streaming text and supplied reasoning when the backend supports it.
+Captured per run at submission.  Unsupported backends can return one response."
+  :type 'boolean :group 'emacs-agent)
 
 (defcustom emacs-agent-max-tool-calls 100
   "Number of tool calls allowed before pausing a run.
@@ -23,7 +28,7 @@ any execution.  Counts include evaluations returning errors or quit."
 (defun emacs-agent-gptel--live-p (run)
   "Whether RUN still owns its session and may receive callbacks."
   (and (eq run (emacs-agent-session-active-run (emacs-agent-run-session run)))
-       (memq (emacs-agent-run-status run) '(requesting tool-running paused))))
+       (memq (emacs-agent-run-status run) '(requesting streaming tool-running paused))))
 
 (defun emacs-agent-gptel--history (run)
   "Convert RUN's session history into gptel's experimental prompt format.
@@ -62,11 +67,28 @@ use only unfinished entries.  Fail closed when this contract changes."
     (cl-mapcar (lambda (tuple spec) (cons (plist-get spec :id) tuple))
                (reverse calls) pending)))
 
+(defun emacs-agent-gptel--flush-assistant (run)
+  "Commit accumulated assistant chunks for this HTTP response exactly once.
+Streaming deltas are display events; replay uses one complete logical message."
+  (when (emacs-agent-run-assistant-chunks run)
+    (let ((text (apply #'concat (nreverse (emacs-agent-run-assistant-chunks run)))))
+      (setf (emacs-agent-run-assistant-chunks run) nil)
+      (emacs-agent-session-record
+       run 'assistant-end nil
+       (list :role 'assistant :run-id (emacs-agent-run-id run) :text text)))))
+
+(defun emacs-agent-gptel--streaming (run)
+  "Expose streaming status without overwriting a tool-budget pause."
+  (when (eq (emacs-agent-run-status run) 'requesting)
+    (setf (emacs-agent-run-status run) 'streaming)
+    (emacs-agent-session-record run 'streaming "Receiving response")))
+
 (defun emacs-agent-gptel--finish (run status &optional detail)
   "Terminalize RUN before abort callbacks, release its queue and start the next.
 Previously executed Lisp is never undone.  Transport buffers remain until
 reset/cleanup support is added, so gptel can finish its own FSM safely."
   (when (emacs-agent-gptel--live-p run)
+    (emacs-agent-gptel--flush-assistant run)
     (setf (emacs-agent-run-status run) status
           (emacs-agent-run-pending-tools run) nil)
     (let ((session (emacs-agent-run-session run)))
@@ -167,7 +189,13 @@ Slot access and terminal state names are isolated pinned-gptel contracts."
           ('abort (emacs-agent-gptel--finish run 'cancelled "Provider request aborted"))
           ('nil (emacs-agent-gptel--finish run 'failed
                                          (format "%s" (or (plist-get info :status) "No response"))))
+          ('t
+           ;; End of ONE HTTP response, not necessarily the whole tool loop.
+           (emacs-agent-gptel--flush-assistant run)
+           (when (eq (emacs-agent-run-status run) 'streaming)
+             (setf (emacs-agent-run-status run) 'requesting)))
           (`(tool-call . ,calls)
+           (emacs-agent-gptel--flush-assistant run)
            (dolist (entry (emacs-agent-gptel--tool-entries calls info))
              (unless (gethash (car entry) (emacs-agent-run-tool-call-ids run))
                ;; Claim before dispatch, including tools held by a pause.
@@ -177,11 +205,14 @@ Slot access and terminal state names are isolated pinned-gptel contracts."
            (emacs-agent-gptel--drain run))
           (`(tool-result . ,_) nil) ; Captured before continuation.
           (`(reasoning . ,text)
-           (when (stringp text) (emacs-agent-session-record run 'reasoning text)))
+           (cond ((stringp text)
+                  (emacs-agent-gptel--streaming run)
+                  (emacs-agent-session-record run 'reasoning text))
+                 ((eq text t) (emacs-agent-session-record run 'reasoning-end nil))))
           ((pred stringp)
-           (emacs-agent-session-record
-            run 'assistant response
-            (list :role 'assistant :run-id (emacs-agent-run-id run) :text response))))
+           (emacs-agent-gptel--streaming run)
+           (push response (emacs-agent-run-assistant-chunks run))
+           (emacs-agent-session-record run 'assistant response)))
       (quit (emacs-agent-gptel--finish run 'cancelled "Callback interrupted"))
       (error (emacs-agent-gptel--finish run 'failed (error-message-string err))))))
 
@@ -223,7 +254,7 @@ Slot access and terminal state names are isolated pinned-gptel contracts."
             (let ((fsm (emacs-agent-gptel--make-fsm run)))
               (setf (emacs-agent-run-request-handle run) fsm)
               (gptel-request (emacs-agent-gptel--history run)
-                :buffer (current-buffer) :stream nil :system emacs-agent-system-prompt
+                :buffer (current-buffer) :stream (emacs-agent-run-stream run) :system emacs-agent-system-prompt
                 :fsm fsm :callback (apply-partially #'emacs-agent-gptel--callback run))))
         (quit (emacs-agent-gptel--finish run 'cancelled "Request setup interrupted"))
         (error (emacs-agent-gptel--finish run 'failed (error-message-string err)))))))
@@ -234,7 +265,8 @@ Each run has its own transport, callback guard, tool registry and budget."
   (let ((source (emacs-agent-run-source-buffer run)))
     (with-current-buffer (if (buffer-live-p source) source (current-buffer))
       (setf (emacs-agent-run-backend run) gptel-backend
-            (emacs-agent-run-model run) gptel-model)))
+            (emacs-agent-run-model run) gptel-model
+            (emacs-agent-run-stream run) emacs-agent-stream)))
   (emacs-agent-session-record run 'queued (emacs-agent-run-user-text run))
   (emacs-agent-gptel--start-next (emacs-agent-run-session run))
   run)

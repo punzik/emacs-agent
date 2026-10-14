@@ -15,7 +15,7 @@
 
 (cl-defstruct emacs-agent-run
   id session user-text editor-context source-buffer source-window
-  (status 'queued) request-handle transport-buffer backend model
+  (status 'queued) request-handle transport-buffer backend model stream assistant-chunks
   (tool-count 0) tool-budget pending-tools
   (tool-call-ids (make-hash-table :test #'equal)))
 

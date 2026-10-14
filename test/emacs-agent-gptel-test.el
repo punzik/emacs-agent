@@ -15,6 +15,7 @@
          (emacs-agent-session-event-functions nil)
          (emacs-agent-gptel--executing-tool nil)
          (emacs-agent-max-tool-calls 100)
+         (emacs-agent-stream t)
          (emacs-agent-context-history 'current)
          (gptel-backend (gptel-make-openai "agent-offline" :host "offline.invalid" :key "unused"))
          (gptel-model 'gpt-4o)
@@ -25,7 +26,8 @@
          (cl-letf (((symbol-function 'gptel-request)
                     (lambda (prompt &rest keys)
                       (push (list :prompt prompt :callback (plist-get keys :callback)
-                                  :buffer (plist-get keys :buffer)) emacs-agent-test--requests)
+                                  :buffer (plist-get keys :buffer)
+                                  :stream (plist-get keys :stream)) emacs-agent-test--requests)
                       'mock-request))
                    ((symbol-function 'gptel-abort) #'ignore))
            ,@body)
@@ -275,5 +277,87 @@ Mock only the gptel dispatch callback tuples, including their reversed order."
           (should (string-match-p "assistant" wire))
           (should-not gptel-track-response)
           (should (eq (emacs-agent-run-status next) 'requesting)))))))
+
+(ert-deftest emacs-agent-adapter-stream-http-end-does-not-end-tool-loop ()
+  (emacs-agent-test-adapter
+    (with-temp-buffer
+      (let* ((run (emacs-agent-test--submit "stream"))
+             (session (emacs-agent-run-session run))
+             (next (emacs-agent-test--submit "next")))
+        (should (plist-get (car (last emacs-agent-test--requests)) :stream))
+        (emacs-agent-gptel--callback run "Before " nil)
+        (emacs-agent-gptel--callback run "tool" nil)
+        (should (eq (emacs-agent-run-status run) 'streaming))
+        (emacs-agent-gptel--callback run t nil)
+        (should (eq (emacs-agent-session-active-run session) run))
+        (should (eq (emacs-agent-run-status next) 'queued))
+        (emacs-agent-test--calls run '(("call" "(+ 1 1)")))
+        (emacs-agent-gptel--callback run "After " nil)
+        (emacs-agent-gptel--callback run "tool" nil)
+        (emacs-agent-gptel--callback run t nil)
+        (emacs-agent-gptel--callback run t nil) ; completion signal is idempotent
+        (should (equal (mapcar (lambda (message) (plist-get message :role))
+                              (emacs-agent-session-messages session))
+                       '(user assistant tool assistant)))
+        (should (equal (plist-get (nth 1 (emacs-agent-session-messages session)) :text) "Before tool"))
+        (should (equal (plist-get (nth 3 (emacs-agent-session-messages session)) :text) "After tool"))
+        (gptel--fsm-transition (emacs-agent-run-request-handle run) 'DONE)
+        (should (eq (emacs-agent-run-status run) 'completed))
+        (should (eq (emacs-agent-session-active-run session) next))))))
+
+(ert-deftest emacs-agent-adapter-stream-reasoning-only-is-not-fabricated-history ()
+  (emacs-agent-test-adapter
+    (with-temp-buffer
+      (let* ((run (emacs-agent-test--submit "reason"))
+             (session (emacs-agent-run-session run)))
+        (emacs-agent-gptel--callback run '(reasoning . "actual ") nil)
+        (emacs-agent-gptel--callback run '(reasoning . "reasoning") nil)
+        (emacs-agent-gptel--callback run '(reasoning . t) nil)
+        (emacs-agent-gptel--callback run t nil)
+        (gptel--fsm-transition (emacs-agent-run-request-handle run) 'DONE)
+        (should (eq (emacs-agent-run-status run) 'completed))
+        (should (= (length (emacs-agent-session-messages session)) 1))
+        (should (= (length (seq-filter (lambda (event) (eq (plist-get event :type) 'reasoning))
+                                      (emacs-agent-session-events session))) 2))))))
+
+(ert-deftest emacs-agent-adapter-stream-cancellation-retains-partial-once ()
+  (emacs-agent-test-adapter
+    (with-temp-buffer
+      (let* ((run (emacs-agent-test--submit "cancel"))
+             (session (emacs-agent-run-session run)))
+        (emacs-agent-gptel--callback run "partial" nil)
+        (emacs-agent-gptel-cancel session)
+        (let ((events (copy-tree (emacs-agent-session-events session))))
+          (emacs-agent-gptel--callback run "late" nil)
+          (emacs-agent-gptel--callback run t nil)
+          (gptel--fsm-transition (emacs-agent-run-request-handle run) 'DONE)
+          (should (equal events (emacs-agent-session-events session))))
+        (should (eq (emacs-agent-run-status run) 'cancelled))
+        (should (equal (plist-get (car (last (emacs-agent-session-messages session))) :text) "partial"))
+        (should-not (emacs-agent-run-assistant-chunks run))))))
+
+(ert-deftest emacs-agent-adapter-stream-failure-retains-partial-and-unblocks ()
+  (emacs-agent-test-adapter
+    (with-temp-buffer
+      (let* ((run (emacs-agent-test--submit "error"))
+             (session (emacs-agent-run-session run))
+             (next (emacs-agent-test--submit "next")))
+        (emacs-agent-gptel--callback run "partial" nil)
+        (emacs-agent-gptel--callback run nil '(:status "connection lost"))
+        (should (eq (emacs-agent-run-status run) 'failed))
+        (should (eq (emacs-agent-session-active-run session) next))
+        (should (equal (plist-get (nth 1 (emacs-agent-session-messages session)) :text) "partial"))))))
+
+(ert-deftest emacs-agent-adapter-stream-disabled-fallback-commits-at-terminal ()
+  (emacs-agent-test-adapter
+    (let ((emacs-agent-stream nil))
+      (with-temp-buffer
+        (let* ((run (emacs-agent-test--submit "nonstream"))
+               (session (emacs-agent-run-session run)))
+          (should-not (plist-get (car emacs-agent-test--requests) :stream))
+          (emacs-agent-test--complete run "single response")
+          (should (eq (emacs-agent-run-status run) 'completed))
+          (should (equal (plist-get (nth 1 (emacs-agent-session-messages session)) :text)
+                         "single response")))))))
 
 ;;; emacs-agent-gptel-test.el ends here

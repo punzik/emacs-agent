@@ -11,6 +11,7 @@
 ;;; Code:
 (require 'emacs-agent-session)
 (require 'emacs-agent-context)
+(require 'emacs-agent-log)
 
 (autoload 'emacs-agent-gptel-submit "emacs-agent-gptel")
 (autoload 'emacs-agent-gptel-cancel "emacs-agent-gptel")
@@ -31,57 +32,6 @@
 (defconst emacs-agent-system-prompt
   "You are an agent inside a shared live Emacs. Your only tool is eval_elisp, which executes arbitrary Lisp without sandbox or approval. Discover functions using documentation and symbol-function, variables using boundp and symbol-value, buffers using buffer-list, projects using project.el. You may call shell functions and create asynchronous processes. Project sessions separate conversation history, not access. Editor context is diagnostic user-level data captured before prompt entry and may be stale. Tools default to the run's original working buffer if alive, otherwise its session/transport buffer, never necessarily the selected window. Use with-current-buffer explicitly. Buffers may be narrowed; widen when necessary. Buffer text is not automatically included: read the needed ranges. Never invent tool results."
   "Stable instruction for the gptel adapter.")
-
-(define-derived-mode emacs-agent-log-mode special-mode "Emacs-Agent"
-  "Read-only session event view.")
-
-(defun emacs-agent--session-name (session)
-  "Return a readable collision-resistant name for SESSION."
-  (let ((root (emacs-agent-session-project-root session)))
-    (if root
-        (format "%s#%s" (file-name-nondirectory (directory-file-name root))
-                (substring (secure-hash 'sha256 root) 0 10))
-      "global")))
-
-(defun emacs-agent--log-buffer (session)
-  "Return SESSION's live journal buffer, creating it if needed."
-  (or (and (buffer-live-p (emacs-agent-session-log-buffer session))
-           (emacs-agent-session-log-buffer session))
-      (let ((buffer (generate-new-buffer
-                     (format "*emacs-agent: %s*" (emacs-agent--session-name session)))))
-        (with-current-buffer buffer
-          (emacs-agent-log-mode)
-          (setq-local emacs-agent-session--owner session)
-          (setq-local default-directory
-                      (or (emacs-agent-session-project-root session) default-directory)))
-        (setf (emacs-agent-session-log-buffer session) buffer)
-        buffer)))
-
-(defun emacs-agent--render-log (session)
-  "Render SESSION's structured events, never its outgoing API history.
-This basic non-streaming view will be replaced by the stage 3 renderer."
-  (with-current-buffer (emacs-agent--log-buffer session)
-    (let ((inhibit-read-only t)
-          (position (point))
-          (started (make-hash-table :test #'equal)))
-      (dolist (event (emacs-agent-session-events session))
-        (when (eq (plist-get event :type) 'user)
-          (puthash (plist-get event :run-id) t started)))
-      (erase-buffer)
-      (dolist (event (emacs-agent-session-events session))
-        (unless (and (eq (plist-get event :type) 'queued)
-                     (gethash (plist-get event :run-id) started))
-          (insert (format "%s [%s]\n%s\n\n"
-                          (plist-get event :type) (plist-get event :run-id)
-                          (plist-get event :payload)))))
-      (goto-char (min position (point-max))))))
-
-(defun emacs-agent--refresh-log (session _event)
-  "Refresh SESSION's journal on an event only if that journal is still live."
-  (when (buffer-live-p (emacs-agent-session-log-buffer session))
-    (emacs-agent--render-log session)))
-
-(add-hook 'emacs-agent-session-event-functions #'emacs-agent--refresh-log)
 
 ;;;###autoload
 (defun emacs-agent-ask ()

@@ -3,7 +3,7 @@
 An Emacs Lisp agent using gptel and one unrestricted `eval_elisp` tool in the
 live editor. Project identities separate conversations, not editor access.
 
-**Status: stage 2 (non-streaming run lifecycle), not the finished MVP.**
+**Status: stage 3 (streaming and incremental journal), not the finished MVP.**
 `emacs-agent-ask` now sends through your configured gptel backend/model.
 Turns are FIFO within a session; different sessions can request concurrently.
 
@@ -13,8 +13,7 @@ Turns are FIFO within a session; different sessions can request concurrently.
 - Prototype: `examples/emacs-agent-spike.el`
 - Reusable evaluator: `emacs-agent-eval.el`
 
-Next: streaming/event UI (stage 3), then complete history-policy/replay
-validation and persistence. No global keybindings or user gptel configuration
+Next: complete history-policy/replay validation (stage 4), then persistence. No global keybindings or user gptel configuration
 are changed. The adapter uses the pinned gptel revision documented below.
 
 ## Usage
@@ -35,8 +34,26 @@ nor queues a turn. Multiline input uses the ordinary Emacs minibuffer.
 
 `M-x emacs-agent-show` lazily creates/shows the corresponding read-only session
 view. It shows user/assistant text, supplied reasoning, tool calls/results and
-run statuses. This is a basic non-streaming renderer; context metadata is kept
+run statuses. `emacs-agent-stream` defaults to t; unsupported backends may
+return a single response, and nil requests non-streaming. Supplied reasoning
+is streamed as received, never reconstructed. Context metadata is kept
 separate from displayed user text.
+
+The journal is updated incrementally, without erasing/redrawing old entries.
+Adjacent text/reasoning chunks share a section; model history contains one
+assembled assistant message per HTTP response, not one message per token.
+An HTTP stream-end signal does not release the FIFO; only the run's terminal
+FSM state does. Cancel/error preserves already received partial text.
+
+Tool arguments/results are initially folded (`emacs-agent-log-collapse-tools`);
+reasoning is initially visible (`emacs-agent-log-collapse-reasoning`). `TAB`
+or click a foldable header to toggle; folding affects only the live view.
+The header line shows active status and queued-turn count. Journal-local
+bindings: `a` asks, `C-c C-k` cancels, `C-c C-c` resumes, `g` consumes any
+unrendered events. Readers of old text retain point/window-start/pixel scroll;
+only points already at the end follow new text. Windows are never selected
+by callbacks. Closing the journal does not cancel a run or resurrect the
+view on subsequent chunks; `emacs-agent-show` replays all retained events.
 Two non-project buffers share the global session; files in one project share
 its canonical root key. Symlinked local roots are resolved when possible;
 remote roots are never locally canonicalized. Same-basename projects remain
@@ -74,8 +91,8 @@ Emacs event loops. Tools default to the live source buffer, or the run's
 transport if it died; windows and captured point/region are not restored.
 
 Sessions/queues currently last only for the Emacs process lifetime.
-Save/session-list commands, streaming and transport-buffer reclamation are
-not implemented yet.
+Save/session-list commands and transport-buffer reclamation are not
+implemented yet.
 
 The tested Emacs 30.2 has no built-in `edit-minibuffer` command; no fictitious
 `C-M-c` binding or custom editor is supplied. Existing user minibuffer editing
@@ -85,7 +102,7 @@ separate buffer remains a UX integration item for later polishing.
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 28 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 38 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh
