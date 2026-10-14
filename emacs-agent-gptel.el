@@ -28,7 +28,10 @@ any execution.  Counts include evaluations returning errors or quit."
 
 (defun emacs-agent-gptel--live-p (run)
   "Whether RUN still owns its session and may receive callbacks."
-  (and (eq run (emacs-agent-session-active-run (emacs-agent-run-session run)))
+  (and (eq (gethash (emacs-agent-session-key (emacs-agent-run-session run))
+                    emacs-agent-session--registry)
+           (emacs-agent-run-session run))
+       (eq run (emacs-agent-session-active-run (emacs-agent-run-session run)))
        (memq (emacs-agent-run-status run) '(requesting streaming tool-running paused))))
 
 (defun emacs-agent-gptel--validate-protocol (protocol)
@@ -380,15 +383,22 @@ Slot access and terminal state names are isolated pinned-gptel contracts."
        run 'user (emacs-agent-run-user-text run)
        (list :role 'user :run-id (emacs-agent-run-id run)
              :text (emacs-agent-run-user-text run) :context (emacs-agent-run-editor-context run)))
-      (emacs-agent-session-record run 'requesting
-                                  (list :backend (and (emacs-agent-run-backend run)
-                                                      (gptel-backend-name (emacs-agent-run-backend run)))
-                                        :model (format "%s" (emacs-agent-run-model run))))
       (condition-case err
           (progn
+            (unless (equal gptel-version "0.9.9.5")
+              (error "Unsupported gptel version %s; replay requires the tested 0.9.9.5 revision" gptel-version))
             (unless (eq (type-of (emacs-agent-run-backend run)) 'gptel-openai)
               (error "Unsupported replay backend %s; currently only Chat Completions is supported"
                      (type-of (emacs-agent-run-backend run))))
+            (unless (or (symbolp (emacs-agent-run-model run)) (stringp (emacs-agent-run-model run)))
+              (error "Invalid gptel model identifier"))
+            (emacs-agent-session-record
+             run 'requesting
+             (list :backend (gptel-backend-name (emacs-agent-run-backend run))
+                   :model (format "%s" (emacs-agent-run-model run))
+                   :context-policy (emacs-agent-run-context-policy run)
+                   :stream (emacs-agent-run-stream run)
+                   :tool-budget (emacs-agent-run-tool-budget run)))
             (with-current-buffer (emacs-agent-run-transport-buffer run)
             (setq-local default-directory
                         (plist-get (emacs-agent-run-editor-context run) :default-directory))
@@ -419,6 +429,10 @@ Slot access and terminal state names are isolated pinned-gptel contracts."
 (defun emacs-agent-gptel-submit (run)
   "Capture source-buffer gptel configuration and schedule queued RUN.
 Each run has its own transport, callback guard, tool registry and budget."
+  (unless (eq (gethash (emacs-agent-session-key (emacs-agent-run-session run))
+                      emacs-agent-session--registry)
+              (emacs-agent-run-session run))
+    (user-error "Stale agent session; reopen from a working buffer"))
   (let ((source (emacs-agent-run-source-buffer run)))
     (with-current-buffer (if (buffer-live-p source) source (current-buffer))
       (setf (emacs-agent-run-backend run) gptel-backend

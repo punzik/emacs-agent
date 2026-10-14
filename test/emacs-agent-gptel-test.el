@@ -12,6 +12,8 @@
   (declare (indent 0) (debug t))
   `(let ((emacs-agent-session--registry (make-hash-table :test #'equal))
          (emacs-agent-session--counter 0)
+         (emacs-agent-data-directory (make-temp-file "agent-adapter-test-" t))
+         (emacs-agent-auto-save nil)
          (emacs-agent-session-event-functions nil)
          (emacs-agent-gptel--executing-tool nil)
          (emacs-agent-max-tool-calls 100)
@@ -38,7 +40,8 @@
        (maphash (lambda (_key session)
                   (when (buffer-live-p (emacs-agent-session-log-buffer session))
                     (kill-buffer (emacs-agent-session-log-buffer session))))
-                emacs-agent-session--registry))))
+                emacs-agent-session--registry)
+       (delete-directory emacs-agent-data-directory t))))
 
 (defun emacs-agent-test--submit (text &optional root)
   "Create and submit TEXT from the current buffer for ROOT."
@@ -360,5 +363,17 @@ Mock only the gptel dispatch callback tuples, including their reversed order."
           (should (eq (emacs-agent-run-status run) 'completed))
           (should (equal (plist-get (nth 1 (emacs-agent-session-messages session)) :text)
                          "single response")))))))
+
+(ert-deftest emacs-agent-adapter-incompatible-version-and-live-model-object-fail-safely ()
+  (emacs-agent-test-adapter
+    (with-temp-buffer
+      (let ((gptel-version "future-version"))
+        (should (eq (emacs-agent-run-status (emacs-agent-test--submit "old contract")) 'failed)))
+      (let* ((gptel-model (current-buffer))
+             (run (emacs-agent-test--submit "invalid model")))
+        (should (eq (emacs-agent-run-status run) 'failed))
+        (should-not (string-match-p "#<" (prin1-to-string
+                                         (emacs-agent-session-events (emacs-agent-run-session run)))))))
+    (should-not emacs-agent-test--requests)))
 
 ;;; emacs-agent-gptel-test.el ends here

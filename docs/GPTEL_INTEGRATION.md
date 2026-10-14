@@ -304,14 +304,64 @@ policy, transform/truncation isolation, unsupported backend preflight, opaque
 field poisoning, nested signatures and streaming batch order. Other providers
 are deliberately rejected, not claimed to have been integration-tested.
 
+## Stage 5 persistence and restart validation
+
+`emacs-agent-store.el` stores one versioned Lisp-data snapshot per canonical
+session, below `emacs-agent-data-directory` (default under the user's Emacs
+directory). The filename is `global.eld` or a root hash. Schema 1 records the
+adapter contract, session identity/root, events/messages, timestamps, source
+name/file and durable run audit fields. Backend name/model and agent request
+settings are recorded; backend credential objects, HTTP handles, functions,
+buffers/windows/markers/processes are never serialized. Data is read, never
+loaded/evaluated as code; unsupported schema/adapter files require migration.
+
+Writes use a same-directory 0600 temporary file and rename; newly created
+storage directories are 0700. Serialization rejects live objects, closures,
+cycles/deeply nested data and strips string properties. The old snapshot is
+left intact on failure. Autosave happens at tool/status boundaries and at
+most every five seconds for text/reasoning deltas. A partial assistant message
+is copied into a checkpoint without mutating/flushing the live run. Hook
+failures are isolated so a broken renderer cannot prevent a later save hook.
+Save failures are reported, not turned into side-effecting retries.
+
+Restore is lazy per canonical key; session-list scans files independently.
+Corrupt files warn/fail with their path without discarding valid sessions,
+and direct access never silently creates a fresh replacement. Pending/active/
+paused tasks are represented by `interrupted` events, not runtime runs. Pending
+text/audit stays in the journal; no tasks, callbacks or subprocesses are
+recreated. Source references reconnect only to matching already-open buffers;
+no files are auto-opened. Runtime callback ownership additionally requires the
+registered session object, rejecting stale objects after registry replacement.
+
+An independent `emacs -Q --batch` process loaded a scratch-directory snapshot
+of the real stage 4 conversation: 14 messages, six original-ID tool pairs and
+six textual reasoning fields survived actual gptel dry-run serialization.
+Active/pending state was nil. The working editor was **not** restarted and
+its backend credentials were not read/copied into the fresh process.
+
+The snapshot was also reloaded into an isolated fixture in the configured
+live Emacs. A new real LLM turn, with zero tools, correctly recalled both the
+arithmetic result `42` and exact prior buffer name
+`*emacs-agent-history-smoke*`, distinct from its new source. All test persistence
+was written to a private `/tmp/emacs-agent-persistence-smoke-*` directory,
+not the repository/default user's storage. Observer/fixture code did not alter
+global gptel hooks/settings.
+
+58 ERT tests and warning-as-error compilation pass. Persistence regressions
+cover save/load root mapping, original tool/reasoning replay, partial/queued
+interruption without resume, permissions, rename failure/temporary cleanup,
+corruption isolation, schema mismatch, no code evaluation, live-object/cycle
+rejection, source absence/remote roots, broken render hooks, stale callbacks
+and session-list navigation. Review found an unguarded `copy-tree` before cycle
+validation; guarded copying and a full save-path regression now reject it
+without hanging or replacing the old file.
+
 ## Scope and limitations
 
-The original spike remains stage 0. The main package is stage 4, not the
-completed MVP: streaming requests, sessions/context, incremental/foldable
-journal, FIFO/cancellation/tool budget and plain-text/paired-tool history
-are active. Supported Chat replay includes known textual tool reasoning.
-Persistence and opaque provider-history replay remain unimplemented; unsupported
-protocols fail explicitly. Transport/log buffers remain available for inspection; kill
+Stages 0–5 are implemented for the stated Chat Completions boundary:
+streaming, sessions/context, incremental/foldable journal, FIFO/cancellation/
+tool budget, validated tool/reasoning replay and durable snapshots. Unsupported
+opaque protocols still fail explicitly. Transport/log buffers remain available for inspection; kill
 them when finished. The universal evaluator captures `princ`, but does not capture
 `message` or backtraces yet. Synchronous Lisp can block the UI. Cancelling does
 not undo changes or stop arbitrary subprocesses. Full evaluation can read

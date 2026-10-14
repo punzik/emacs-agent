@@ -106,4 +106,14 @@
           (should (= (window-point follower) (point-max)))
           (should (eq (selected-window) reader)))))))
 
+(ert-deftest emacs-agent-log-reasoning-display-policy-keeps-data ()
+  (emacs-agent-test-log
+    (let ((emacs-agent-show-reasoning nil))
+      (emacs-agent-session-record run 'reasoning "actual hidden thinking")
+      (emacs-agent-session-record run 'assistant "Visible answer")
+      (should-not (string-match-p "actual hidden thinking" (buffer-string)))
+      (should (string-match-p "Visible answer" (buffer-string)))
+      (should (equal (plist-get (car (emacs-agent-session-events session)) :payload)
+                     "actual hidden thinking")))))
+
 ;;; emacs-agent-log-test.el ends here

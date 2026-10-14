@@ -12,6 +12,12 @@
 (declare-function emacs-agent-cancel "emacs-agent")
 (declare-function emacs-agent-resume "emacs-agent")
 
+(defcustom emacs-agent-show-reasoning t
+  "Display supplied reasoning in newly rendered journal sections.
+Data is still retained for replay/persistence.  Reopen a journal to apply
+this setting to previously rendered sections."
+  :type 'boolean :group 'emacs-agent)
+
 (defcustom emacs-agent-log-collapse-tools t
   "Initially fold tool arguments/results in newly rendered journal sections."
   :type 'boolean :group 'emacs-agent)
@@ -133,7 +139,7 @@ Do not select windows, steal focus, or force readers of old entries to scroll."
   "Choose a header face for TYPE."
   (pcase type
     ((or 'failed 'error 'cancelled) 'error)
-    ('paused 'warning)
+    ((or 'paused 'interrupted) 'warning)
     ('completed 'success)
     ('reasoning 'font-lock-comment-face)
     (_ 'font-lock-keyword-face)))
@@ -188,7 +194,9 @@ Folding state remains local to the live view and never changes model history."
                        (emacs-agent-session-events session))))
          (while events
            (let ((event (car events)))
-             (if (memq (plist-get event :type) '(assistant-end reasoning-end))
+             (if (or (memq (plist-get event :type) '(assistant-end reasoning-end))
+                     (and (eq (plist-get event :type) 'reasoning)
+                          (not emacs-agent-show-reasoning)))
                  (setq emacs-agent-log--tail nil)
                (emacs-agent-log--section event)))
            (setq emacs-agent-log--cursor events events (cdr events))))))

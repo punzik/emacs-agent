@@ -1,7 +1,7 @@
 ;;; emacs-agent.el --- Project-scoped agent entry points -*- lexical-binding: t; -*-
 
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "28.1"))
+;; Package-Requires: ((emacs "28.1") (gptel "0.9.9.5"))
 ;; Keywords: tools, convenience
 
 ;;; Commentary:
@@ -12,6 +12,8 @@
 (require 'emacs-agent-session)
 (require 'emacs-agent-context)
 (require 'emacs-agent-log)
+(require 'emacs-agent-store)
+(require 'tabulated-list)
 
 (autoload 'emacs-agent-gptel-submit "emacs-agent-gptel")
 (autoload 'emacs-agent-gptel-cancel "emacs-agent-gptel")
@@ -90,6 +92,65 @@ The next queued turn may start; cancellation does not retry any tool call."
   "Continue the current session's paused run with another tool budget."
   (interactive)
   (emacs-agent-gptel-resume (emacs-agent--current-session)))
+
+;;;###autoload
+(defun emacs-agent-save ()
+  "Atomically save the current session, including a checkpoint of partial text.
+Does not stop or resume any run.  Snapshots may contain secrets."
+  (interactive)
+  (let ((file (emacs-agent-store-save (emacs-agent--current-session))))
+    (message "Saved agent session to %s" file)
+    file))
+
+(defvar emacs-agent-session-list-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map tabulated-list-mode-map)
+    (define-key map (kbd "RET") #'emacs-agent-session-list-show)
+    map))
+
+(define-derived-mode emacs-agent-session-list-mode tabulated-list-mode "Agent-Sessions"
+  "Read-only session list.  RET opens a journal; g refreshes saved sessions."
+  (setq tabulated-list-format [("Session" 32 t) ("Status" 16 t) ("Updated" 20 t) ("Root" 0 t)]
+        tabulated-list-padding 2
+        tabulated-list-sort-key '("Updated" . t))
+  (add-hook 'tabulated-list-revert-hook #'emacs-agent-session-list--entries nil t)
+  (tabulated-list-init-header))
+
+(defun emacs-agent-session-list--entries ()
+  "Load independent files and populate the list without starting any run."
+  (emacs-agent-store-load-all)
+  (setq tabulated-list-entries nil)
+  (maphash
+   (lambda (key session)
+     (when (emacs-agent-store--identity-p key (emacs-agent-session-project-root session))
+       (let* ((run (emacs-agent-session-active-run session))
+              (last (car (last (emacs-agent-session-events session))))
+              (status (if run (emacs-agent-run-status run) (or (plist-get last :type) 'idle))))
+         (push (list key (vector (emacs-agent--session-name session) (format "%s" status)
+                                 (format-time-string "%Y-%m-%d %H:%M:%S"
+                                                     (seconds-to-time (emacs-agent-session-updated-at session)))
+                                 (or (emacs-agent-session-project-root session) "global")))
+               tabulated-list-entries))))
+   emacs-agent-session--registry))
+
+(defun emacs-agent-session-list-show ()
+  "Show the session on the selected row without creating or resuming tasks."
+  (interactive)
+  (let ((session (gethash (tabulated-list-get-id) emacs-agent-session--registry)))
+    (unless session (user-error "No session on this row"))
+    (emacs-agent--render-log session)
+    (display-buffer (emacs-agent--log-buffer session))))
+
+;;;###autoload
+(defun emacs-agent-session-list ()
+  "List in-memory and saved sessions; isolate corrupt snapshots as warnings."
+  (interactive)
+  (let ((buffer (get-buffer-create "*emacs-agent sessions*")))
+    (with-current-buffer buffer
+      (emacs-agent-session-list-mode)
+      (emacs-agent-session-list--entries)
+      (tabulated-list-print t))
+    (display-buffer buffer)))
 
 (provide 'emacs-agent)
 ;;; emacs-agent.el ends here

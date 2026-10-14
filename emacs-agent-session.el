@@ -9,6 +9,8 @@
 (require 'subr-x)
 (require 'emacs-agent-eval)
 
+(autoload 'emacs-agent-store-load-session "emacs-agent-store")
+
 (cl-defstruct emacs-agent-session
   id key project-root events messages log-buffer pending-runs active-run
   last-source-buffer updated-at)
@@ -21,7 +23,7 @@
 
 (defvar emacs-agent-session--registry (make-hash-table :test #'equal)
   "Session registry keyed by canonical project directory or `global'.")
-(defvar emacs-agent-session--counter 0)
+(defvar emacs-agent-session--counter (floor (* (float-time) 1000000)))
 (defvar-local emacs-agent-session--owner nil
   "Session associated with an agent journal buffer.")
 
@@ -40,6 +42,7 @@ resolution.  If local truename resolution fails, keep the expanded root."
   "Find or create the session for canonical ROOT; nil selects global."
   (let ((key (or root 'global)))
     (or (gethash key emacs-agent-session--registry)
+        (emacs-agent-store-load-session root)
         (let ((session (make-emacs-agent-session
                         :id (format "session-%d" (cl-incf emacs-agent-session--counter))
                         :key key :project-root root :updated-at (float-time))))
@@ -97,9 +100,13 @@ The rendered journal is never used to reconstruct that history."
           (nconc (emacs-agent-session-events session) (list event))
           (emacs-agent-session-updated-at session) (plist-get event :time))
     ;; A broken renderer must not lose tool results or strand the network loop.
-    (condition-case err
-        (run-hook-with-args 'emacs-agent-session-event-functions session event)
-      ((error quit) (message "Emacs Agent event renderer: %s" (error-message-string err))))
+    (run-hook-wrapped
+     'emacs-agent-session-event-functions
+     (lambda (function &rest args)
+       (condition-case err (apply function args)
+         ((error quit) (message "Emacs Agent event handler: %s" (error-message-string err))))
+       nil)
+     session event)
     event))
 
 (provide 'emacs-agent-session)

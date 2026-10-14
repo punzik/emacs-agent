@@ -3,7 +3,7 @@
 An Emacs Lisp agent using gptel and one unrestricted `eval_elisp` tool in the
 live editor. Project identities separate conversations, not editor access.
 
-**Status: stage 4 (validated Chat Completions replay), not the finished MVP.**
+**Status: stage 5 implemented — persistent Chat Completions agent.**
 `emacs-agent-ask` sends through your configured Chat Completions backend/model.
 Turns are FIFO within a session; different sessions can request concurrently.
 
@@ -13,10 +13,19 @@ Turns are FIFO within a session; different sessions can request concurrently.
 - Prototype: `examples/emacs-agent-spike.el`
 - Reusable evaluator: `emacs-agent-eval.el`
 
-Next: persistence (stage 5). No global keybindings or user gptel configuration
-are changed. The adapter uses the pinned gptel revision documented below.
+No global keybindings or user gptel configuration are changed. The adapter
+uses the pinned gptel revision documented below. A separate shell tool remains
+out of scope; shell execution is available through unrestricted Lisp.
 
-## Usage
+## Installation and usage
+
+Tested with Emacs 30.2 and gptel 0.9.9.5 at commit
+`fc6963634af2f76a9909ad674e2c0b3f005e60b5` (see integration notes for
+installed package/dependency versions). The declared minimum Emacs is 28.1,
+not yet tested. Install/pin gptel using your normal Emacs package management,
+configure its Chat Completions backend/model, then add this repository to
+`load-path`. Package loading does not send requests. Unsupported gptel
+versions fail before network submission rather than silently replaying data.
 
 ```elisp
 (add-to-list 'load-path "/path/to/emacs-ai-agent")
@@ -35,8 +44,8 @@ nor queues a turn. Multiline input uses the ordinary Emacs minibuffer.
 `M-x emacs-agent-show` lazily creates/shows the corresponding read-only session
 view. It shows user/assistant text, supplied reasoning, tool calls/results and
 run statuses. `emacs-agent-stream` defaults to t; supported backends without
-streaming may return a single response, and nil requests non-streaming. Supplied reasoning
-is streamed as received, never reconstructed. Context metadata is kept
+streaming may return a single response, and nil requests non-streaming.
+Supplied reasoning is streamed as received, never reconstructed. Context metadata is kept
 separate from displayed user text.
 
 The journal is updated incrementally, without erasing/redrawing old entries.
@@ -46,7 +55,10 @@ An HTTP stream-end signal does not release the FIFO; only the run's terminal
 FSM state does. Cancel/error preserves already received partial text.
 
 Tool arguments/results are initially folded (`emacs-agent-log-collapse-tools`);
-reasoning is initially visible (`emacs-agent-log-collapse-reasoning`). `TAB`
+reasoning is initially visible (`emacs-agent-log-collapse-reasoning`).
+`emacs-agent-show-reasoning` can hide it in newly rendered views without
+removing stored/replay data; reopen the journal to apply it to old sections.
+`TAB`
 or click a foldable header to toggle; folding affects only the live view.
 The header line shows active status and queued-turn count. Journal-local
 bindings: `a` asks, `C-c C-k` cancels, `C-c C-c` resumes, `g` consumes any
@@ -92,8 +104,9 @@ a request: their opaque reasoning/signature formats are not safely replayable
 through this gptel adapter. Observed unknown assistant/tool protocol fields,
 signatures, encrypted data or callback shapes also fail explicitly, before
 tool execution. That session receives a non-replayable history marker; future
-turns fail rather than silently omit unsupported data. There is no reset UI
-yet: use a fresh session/process after such a failure.
+turns fail rather than silently omit unsupported data. There is no reset UI:
+archive the affected snapshot and restart, or start a fresh Emacs with a new
+data directory. Restarting alone intentionally retains the failure marker.
 
 This is not a universal detector for proprietary Chat extensions: upstream
 gptel can discard unrecognized streaming fields before exposing them. Use
@@ -114,19 +127,65 @@ All tool evaluation is serialized across sessions, including during recursive
 Emacs event loops. Tools default to the live source buffer, or the run's
 transport if it died; windows and captured point/region are not restored.
 
-Sessions/queues currently last only for the Emacs process lifetime.
-Save/session-list commands and transport-buffer reclamation are not
-implemented yet.
+## Persistence and recovery
 
-The tested Emacs 30.2 has no built-in `edit-minibuffer` command; no fictitious
-`C-M-c` binding or custom editor is supplied. Existing user minibuffer editing
-extensions can use normal minibuffer hooks/keymaps. Editing long prompts in a
-separate buffer remains a UX integration item for later polishing.
+`emacs-agent-data-directory` defaults to `emacs-agent/` below
+`user-emacs-directory`, not the active project. Each session has an independent
+versioned `.eld` data file: `global.eld` or a canonical-root hash. Files are
+read as Lisp **data**, never loaded/evaluated as code. Writes use a same-directory
+temporary file and atomic rename (new directory 0700, snapshot files 0600).
+No encryption is provided. If your Emacs directory is tracked in dotfiles,
+ignore this subdirectory or configure an untracked/private location.
+
+`emacs-agent-auto-save` defaults to t. Meaningful events, tool boundaries,
+completion/cancellation and partial-response completion trigger checkpoints.
+Streaming deltas are checkpointed at most every five seconds. Explicit
+`M-x emacs-agent-save` saves the current session, including currently received
+partial text, without flushing/changing its live run. A renderer failure
+cannot suppress autosave; an autosave failure is reported but does not retry
+or terminate the model/tool loop. Persistence writes are synchronous I/O.
+
+`M-x emacs-agent-session-list` loads independent snapshots and shows sessions;
+`RET` opens a read-only journal, `g` refreshes. Asking/showing from a project
+or global buffer lazily restores that canonical session. Existing in-memory
+sessions are never overwritten by a disk refresh. Backend/model are chosen
+from the current gptel configuration on each new run; stored settings are
+an audit, not code that alters user configuration.
+
+After restart, active/paused and queued tasks become `interrupted` events.
+**Nothing is automatically resumed or reexecuted.** Completed results and
+partial text remain in history. Pending user text is retained in the journal,
+not silently submitted to the model; copy/resubmit it deliberately. Already
+performed effects may remain even when a result was not checkpointed. Inspect
+interrupted runs before requesting continuation.
+
+Only source buffer name/file identities are saved. They reconnect to matching
+already-open buffers when available, otherwise remain unavailable. No file is
+automatically opened; no buffer/window/process/marker/closure/backend credential
+object or HTTP handle is restored.
+
+A corrupt/unsupported file does not prevent other sessions from loading.
+Direct access to its session fails with its path and migration/archive advice;
+it is not silently replaced with an empty session. New schema/adapter versions
+require an explicit migration. Snapshots are plaintext and can contain secrets
+from prompts, reasoning and tool results; do not publish them. Concurrent
+writers from multiple Emacs processes are not supported (last rename wins).
+Transport-buffer reclamation is still not automatic.
+
+## Long prompts
+
+The tested Emacs has no built-in `edit-minibuffer`/`minibuffer-edit` command,
+so no fictitious `C-M-c` binding is installed. A dependency-free standard
+workflow is to compose/edit the prompt in an ordinary draft buffer, copy it
+with `M-w`, switch to the intended working buffer, invoke `emacs-agent-ask`,
+then `C-y` and `RET`. Multiline text is retained; context comes from the working
+buffer, not the draft. Existing minibuffer-editing extensions can also use
+normal minibuffer hooks/keymaps; the agent does not supply a custom editor.
 
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 45 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 58 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh
@@ -145,4 +204,5 @@ make ELPA=/path/to/elpa test compile
 Only connect to a trusted endpoint. `eval_elisp` can read secrets, execute shell
 commands, modify editor configuration and delete files without confirmation.
 Lisp executes synchronously and can block Emacs. Cancellation does not roll
-back changes or guarantee termination of subprocesses.
+back changes or guarantee termination of subprocesses. Saved history has no
+separate encryption; protect the data directory and backups.
