@@ -1,7 +1,7 @@
 # Emacs Agent после MVP: выводы из Pi/Pigo и план развития
 
-**Статус:** F0 и F0b реализованы; начат F0c — экономный model I/O.
-126 offline ERT и byte compilation с
+**Статус:** F0, F0b и F0c реализованы; следующий этап — согласование F1.
+135 offline ERT и byte compilation с
 warnings-as-errors проходят. Для буферного редактирования F0 есть пользовательский
 live smoke и подтверждение undo; отдельный live smoke F0b ещё не выполнялся.
 Остальные post-MVP этапы не реализованы.
@@ -244,7 +244,7 @@ helper и `save-buffer`, но выявил путаницу string indices/buffe
 Всего 83 offline ERT. Последующий пользовательский live smoke подтвердил
 шесть замен через helper, перечитывание после OLD mismatch без обхода и
 штатный `save-buffer`; пользователь подтвердил undo. Итоговый file-modtime
-отдельно не измерялся. F0b выполнен; текущий следующий приоритет — F0c.
+отдельно не измерялся. F0b выполнен; следующий после него F0c также реализован (см. ниже).
 
 **Реализация:** `emacs-agent-helpers.el`, контракт —
 [ADR-0001](adr/0001-f0-buffer-helpers.md). Загружаются вместе с `emacs-agent`;
@@ -435,9 +435,21 @@ text properties в `buffer-string` (2823 → 32768 символов с усеч�
    Пользовательский live smoke подтвердил один batch из 6 замен; затем
    metadata-only guidance устранил повторное чтение ради tick. Undo/rollback
    в этих успешных live-прогонах отдельно не проверялись.
-4. **Далее согласовать и реализовать:** per-request/run usage с отдельными
-   input/output/cache counts; unknown не превращать в 0, cumulative usage не
-   суммировать повторно. Сначала проверить точный gptel callback contract.
+4. **Реализовано и проверено offline/live:** `emacs-agent-usage.el` и локальные
+   FSM handlers считают каждый HTTP request один раз, до рекурсивного TOOL→WAIT.
+   `usage`/`usage-total` events и active audit сохраняются и отображаются,
+   не попадая в model history. Input-uncached/output/cache-read отделены;
+   input-total/total выводятся без двойного cache. Отсутствие usage — unknown,
+   пропуск делает итог данного поля unknown. `:tokens-full` — только сверочная
+   копия, не повторное сложение. Это gptel-normalized counts: некоторые
+   отсутствующие raw provider поля gptel уже превращает в 0; zero cache не
+   доказывает отсутствие кэша. TYPE слишком рано для streaming; TOOL/DONE и
+   error/abort boundaries покрывают empty/tool-only ответы, cancel снимает
+   уже parsed usage даже без callback. Durable non-stream text blocks остаются
+   complete. 135 ERT и warnings-as-errors проходят. Разрешённый real-model smoke
+   в streaming и non-streaming: по 2 HTTP и 1 eval, ответ 42, source не изменён;
+   итоговые суммы совпали с cumulative. Token savings на исходной задаче не
+   измерены, фактическая модель сервера за alias main не установлена.
 
 Acceptance: source/undo не меняются от чтения, нормальная работа save/undo
 сохраняется; сравнение реальных tool results в wire; новые синтетические
@@ -667,7 +679,7 @@ late callbacks и независимость старой ветви; UI явн�
 |---|---|---|
 | F0 | Helpers: сигнатуры, структурированный результат, narrowing и EOF | Принято: [ADR-0001](adr/0001-f0-buffer-helpers.md); абсолютные координаты, явный widening, terminal empty line, plist с продолжением |
 | F0b | Durable blocks, partial markers, identifiers/timestamps | Принято: [ADR-0003](adr/0003-durable-streaming-blocks.md); schema 2, snapshot-only, partial checkpoints, без миграции/обратной совместимости |
-| F0c | Экономный model I/O, пакетные OLD/NEW edits, usage | [ADR-0004](adr/0004-efficient-model-io.md); plain strings, compact reads и batch edits реализованы, usage согласовать до кода |
+| F0c | Экономный model I/O, пакетные OLD/NEW edits, usage | [ADR-0004](adr/0004-efficient-model-io.md); plain strings, compact reads, batch edits и gptel-normalized usage реализованы; offline/live checks пройдены |
 | F1 | Собственные roots или чтение `.pi`/`.pigo`? | Настраиваемые roots агента; существующие ресурсы подключать явно, не смешивать автоматически |
 | F1 | Читать инструкции всех filesystem ancestors или только scope? | Global + project root → directory source buffer; для global и TRAMP согласовать отдельно |
 | F1 | Template syntax и история ввода | Один формат, например именованные `{{name}}`; явно показывать expansion/provenance, не auto-detect несколько диалектов |
@@ -709,8 +721,8 @@ loading. Любые новые пользовательские настройк
 7. После каждого этапа обновить README/интеграционные ограничения, зафиксировать
    проверенные факты и оставшиеся вопросы. Коммит — только по запросу пользователя.
 
-**Рекомендуемый следующий шаг:** opt-in live smoke пакетных exact-text edits,
-затем согласовать точный usage accounting для завершения F0c. Opt-in
-live smoke сравнивать на одинаковом исходнике/модели с учётом cache. После F0c
-вернуться к трём решениям F1 (roots, hierarchy, template syntax). Большая
-перестройка ядра для этого не требуется.
+**Рекомендуемый следующий шаг:** согласовать три решения F1: roots, hierarchy
+и template syntax. F0c реализован и проверен offline/live; отдельный benchmark
+экономии токенов остаётся опциональным и требует одинакового исходника,
+фактической модели/настроек и сопоставимого cache state. Большая перестройка
+ядра для F1 не требуется.

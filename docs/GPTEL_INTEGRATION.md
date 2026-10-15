@@ -355,13 +355,13 @@ policy, transform/truncation isolation, unsupported backend preflight, opaque
 field poisoning, nested signatures and streaming batch order. Other providers
 are deliberately rejected, not claimed to have been integration-tested.
 
-## Post-MVP F0c: model I/O efficiency (first three slices)
+## Post-MVP F0c: model I/O efficiency
 
 A user comparison found 37 vs 3 tool calls and 136,919 vs 3,483 characters of
 textual tool results. `buffer-string` had serialized font-lock/eglot properties;
 verbose per-line helper metadata, redundant reads and a destructive verification
 followed by recovery also contributed. These are character counts, not provider
-usage: the Emacs log does not record usage; Pi has 4,349 uncached input+output
+usage: those original Emacs logs did not record usage; Pi has 4,349 uncached input+output
 and 13,213 including cache reads. The actual model behind Emacs alias `main`
 was not established. Full evidence/remaining contracts:
 [ADR-0004](adr/0004-efficient-model-io.md). No private logs are test fixtures.
@@ -377,8 +377,8 @@ metadata, no `:lines` rows or line numbering. Internal newlines are preserved,
 the newline after requested END is excluded. Exclusive end is the continuation
 position; concatenate chunks without adding separators, including when split
 on a newline. Around retains `:at`. This intentionally changes the alpha helper
-API, without a compatibility mode. Usage records remain pending; do not call
-this a completed token-efficiency fix.
+API, without a compatibility mode. Per-HTTP/run usage is now implemented below;
+its implementation is not evidence of token savings on the original task.
 
 `emacs-agent-replace-texts` now takes a list of unique OLD/NEW pairs and one
 expected tick for the entire batch. It finds all literal, case-sensitive OLD
@@ -394,7 +394,7 @@ The result is only buffer/tick/modified/changed-count; saving is separate with
 new tool or unrestricted-eval rollback guarantee. The system prompt now prefers
 this batch API instead of computing offsets or managing per-edit ticks.
 
-Validation: **126 offline ERT tests** and byte compilation with warnings-as-errors
+Validation: **135 offline ERT tests** and byte compilation with warnings-as-errors
 via `nix-shell -p gnumake --run 'make clean test compile'`. Tests cover properties
 without source/undo changes, huge property metadata under a small output budget,
 Unicode/empty strings, explicit property inspection/printing and real pinned
@@ -438,6 +438,58 @@ These are character counts, not usage measurements;
 undo/rollback were not directly tested in these successful live batches.
 Reload `emacs-agent-helpers.el` and `emacs-agent.el` before testing; use a clean session
 for a fair size/usage comparison, since previous tool results are not rewritten.
+
+### Per-HTTP and run usage
+
+Pinned gptel 0.9.9.5 Chat Completions exposes current-response `:tokens` and
+cumulative `:tokens-full` plists. WAIT clears current tokens. Streaming TYPE is
+entered on headers, before body usage exists; successful empty/tool-only
+non-streaming responses need not deliver a text callback. We therefore prepend
+private WAIT bookkeeping and TOOL/DONE/ERRS/ABRT observers, before tool dispatch
+can recurse into a new WAIT. No global gptel handlers, hooks or advice change.
+Callbacks update a copied observation, not a sum. Cancellation reads FSM info
+before terminal guards: stream usage may have been parsed without another
+callback. Assistant chunks are flushed before usage events so durable block
+completion still sees adjacent assistant-end.
+
+`emacs-agent-usage.el` emits one `usage` event per closed HTTP attempt and a
+`usage-total` event per run. Active snapshot run audit also contains `:usage`;
+an unfinished request remains unknown after interrupted restore. Existing schema
+2 event persistence/replay handles these serializable fields; no canonical
+message changes and no migration are needed. Both event types display explicit
+counts in the journal, including when reopened.
+
+Counts carry `:source gptel-normalized`. `:input` is uncached input, `:cached`
+cache-read, `:output` output; input-total adds input and cached, total then adds
+output once. A missing/invalid count is `unknown`, not zero; a missing request
+makes the corresponding run total unknown. `:tokens-full` is copied only for
+reconciliation, never repeatedly summed. A critical limitation: gptel already
+defaults some absent raw provider fields to zero. Normalized cached=0 cannot
+prove that the provider reported no caching. Billing, context-window size,
+raw field presence and server-resolved physical model are not inferred.
+
+135 ERT and warnings-as-errors compilation pass, including real pinned
+normalization, recursive TOOL→TRET→WAIT (only HTTP stubbed), duplicate/late
+observations, missing usage with old cumulative, empty success, early TYPE,
+parse-without-callback cancellation, independent sessions, pending restart,
+complete durable non-stream blocks, journal replay and unchanged API history.
+Independent review reproduced the cancellation timing bug; the FSM snapshot fix
+and regression were applied before the final live check.
+
+Authorized live smoke used the already-running Emacs's configured `aiserver` /
+`main` (physical model unknown), on temporary empty buffers. Both streaming and
+non-streaming completed one `(+ 17 25)` tool call and two HTTP requests, returned
+42, and left source unchanged. Final request sums matched final cumulative:
+
+| Mode | Uncached input | Output | Cache-read | Input total | Total |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Streaming | 262 | 85 | 3041 | 3303 | 3388 |
+| Non-streaming | 333 | 85 | 3256 | 3589 | 3674 |
+
+Private snapshots/metrics were 0600 under temporary directories, not fixtures or
+committed logs. The second mode inherited the first turn's history, so these
+numbers validate accounting only, not comparative mode efficiency or savings
+against Pi. A fresh same-task/model/cache-state benchmark remains optional.
 
 ## Post-MVP F0b: durable streaming blocks (schema 2)
 

@@ -1,8 +1,9 @@
 # ADR-0004: Экономный model I/O после сравнения с Pi
 
-Статус: направление и контракт компактного чтения приняты пользователем.
-Plain-string, компактное чтение и пакетные замены реализованы offline.
-Usage требует уточнения до кода. F0c имеет приоритет перед F1.
+Статус: F0c реализован: plain-string, компактное чтение, пакетные замены,
+metadata/prompt и per-request/run usage. Offline tests и пользовательские
+live smoke дополнены разрешённым live usage smoke через доступный gptel.
+Реализация usage не доказывает экономию токенов на исходной задаче.
 
 ## Контекст и наблюдения
 
@@ -215,11 +216,64 @@ save успешны, post-edit чтения не было) пользовате�
 
 ### 4. Usage по каждому обращению и всему run
 
-Сохранять provider input/output/cache counts отдельно, различать текущий запрос,
-накопленную сумму и context size. Отсутствие usage — unknown, не 0; не выдавать
-символьную оценку за usage. До кода проверить точный gptel lifecycle, чтобы
-`:tokens-full` не суммировался повторно и stream usage не дублировался на
-нескольких callbacks. Provider capabilities/unsupported fields не угадывать.
+Пользователь разрешил реализацию и smoke на доступной реальной модели.
+Проверен установленный gptel 0.9.9.5: `:tokens` — plist текущего HTTP-ответа;
+`:tokens-full` — накопленная сумма внутри одного FSM/tool loop. WAIT очищает
+текущие tokens, но сохраняет cumulative. Streaming TYPE приходит уже по headers,
+до body/usage; текстовый callback, включая `t`, не является универсальной
+границей: tool-only/empty non-streaming ответы могут не дать текста вообще.
+
+Контракт для поддерживаемого Chat Completions backend:
+
+- Счётчики имеют явное происхождение `gptel-normalized`: `:input` — uncached
+  input, `:output` — output, `:cached` — cache-read. `:input-total` = input +
+  cached; `:total` добавляет output ровно один раз. Это расход по запросам, не
+  размер context window, не цена и не независимое provider billing измерение.
+- Полное отсутствие usage и неизвестные/некорректные поля — символ `unknown`,
+  не 0. Настоящие числовые нули сохраняются. Если хотя бы один запрос не имеет
+  данного счётчика, соответствующий итог run — unknown, а не частичная сумма.
+- Важно: gptel уже преобразует некоторые отсутствующие raw usage fields в 0.
+  Этот слой не может восстановить исходное presence. Нормализованный cached=0
+  не доказывает отсутствие кэша/наличие cache capability у провайдера. Для raw
+  field-presence нужен отдельный parser contract; глобальное advice ради него
+  не вводим. Полное отсутствие usage по-прежнему остаётся unknown.
+- Ordinal назначается в request-local WAIT, до восстановления protocol и
+  сетевого вызова. Текущие tokens также очищаются до восстановления protocol,
+  чтобы ошибка setup не присвоила предыдущий usage новому запросу.
+- Наблюдения callbacks заменяют скопированные текущие counters, а не суммируются.
+  Request закрывается ровно раз в prepended TOOL/DONE/ERRS/ABRT handlers, до
+  dispatch, который может синхронно начать следующий WAIT. TYPE не закрывает
+  request. Глобальные hooks/handlers gptel не меняются.
+- Cancel/error также снимает последнюю копию из FSM info: parser может получить
+  usage на [DONE] без нового текстового callback. Незавершённый запрос без
+  usage остаётся unknown даже при возможном биллинге. Уже наблюдённые counts
+  сохраняются с terminal status; недостоверные стоимости не вычисляются.
+- Cumulative snapshot сохраняется только как сверочное свидетельство. Итоги
+  считаются из per-request records, не повторным сложением `:tokens-full`.
+- Отдельный `emacs-agent-usage.el` хранит ledger и чистую агрегацию; `usage`
+  events содержат по одному закрытому request, `usage-total` — итог run.
+  Оба типа отображаются в journal, сохраняются/replay через schema 2 events,
+  но не попадают в canonical model history. Active run audit содержит `:usage`,
+  включая pending unknown; после restart остаётся interrupted audit, не retry.
+  Schema bump/migration не нужны: форма events прежняя, audit поле добавлено.
+- Перед usage boundary закрывается assistant accumulator: иначе non-streaming
+  ответ получал usage event между последним text delta и assistant-end,
+  ошибочно оставляя durable block partial. Это покрыто отдельной регрессией.
+- Backend/model в журнале — настроенные имя и alias, не доказательство
+  физической модели сервера. Никаких credentials/живых transport objects в usage.
+
+Offline coverage: настоящий pinned token normalizer и TOOL→TRET→WAIT recursion
+с подменой только HTTP, повторные callbacks, неизвестный второй ответ при
+сохранённом cumulative, пустой DONE, ранний TYPE, ошибки/cancel без callback,
+изоляция sessions, pending restart audit, journal replay и отсутствие usage в
+model history. Независимый review нашёл потерю уже parsed counts при cancel
+без callback; finish теперь снимает FSM info, регрессия воспроизводит это окно.
+Live smoke stream/non-stream выполнен на временном visiting-free source с
+одним `(+ 17 25)` и двумя HTTP-ответами в каждом режиме. Оба завершились,
+результат 42, source не изменён; per-request суммы совпали с final cumulative.
+Приватные snapshots/metrics вне репозитория, права 0600. Это проверка учёта,
+не сравнение token savings/latency между режимами (history/cache различаются).
+Полный финальный прогон: 135 ERT и byte compilation с warnings-as-errors.
 
 ## Проверка результата
 

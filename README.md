@@ -95,7 +95,7 @@ mid-turn. Filtering never mutates stored snapshots or history records.
 Ambient gptel prompt transforms and chat UI history truncation are disabled
 for the private transport only; user's gptel settings/hooks are unchanged.
 
-### Model I/O efficiency (F0c, in progress)
+### Model I/O efficiency (F0c)
 
 A string final value from `eval_elisp` is printed without text properties.
 For example, returning `(buffer-string)` no longer serializes font-lock/eglot
@@ -106,14 +106,31 @@ non-string Lisp values and explicit `prin1` output retain their semantics.
 Output limits still apply to the useful text.
 
 Read results now use one literal `:text` plus range metadata, without per-line
-plists. Batch exact-text edits are also implemented; cache-aware usage
-accounting remains pending. The system prompt has executable examples for all
+plists. Batch exact-text edits and per-HTTP/run usage accounting are implemented.
+The system prompt has executable examples for all
 helpers, field extraction, continuation, read→batch and separate saving. Tests
 run the actual examples through the evaluator on disposable visited files;
 local variables do not survive another tool call. F0b optimizes the disk archive,
 not the model's history. Findings and contracts:
 [ADR-0004](docs/adr/0004-efficient-model-io.md). Token savings must be measured
 with the same model/settings and comparable usage/cache metrics.
+
+### Usage accounting
+
+The journal records `usage` for each HTTP response and `usage-total` for the
+run, separately from model history. Counts are explicitly **gptel-normalized**:
+input-uncached, cache-read, output, input-total (input + cache), and total.
+`:tokens-full` is retained only for reconciliation, never added repeatedly.
+Missing usage is `unknown`, not zero; one missing request makes that field's
+run total unknown. Zero cache in gptel's normalized data is not proof that the
+provider reported zero: gptel defaults some absent raw fields to zero.
+These counters measure expenditure over requests, not context-window size or
+billing. Configured backend/model names can still be aliases.
+
+Usage survives snapshot/restart, including interrupted-run audit, and is shown
+when the journal is reopened. No usage is injected into API history. Both
+streaming and non-streaming were checked against the available real gptel model
+using temporary source data; this is not a token-savings benchmark.
 
 ### Reading live buffers (F0)
 
@@ -342,7 +359,7 @@ normal minibuffer hooks/keymaps; the agent does not supply a custom editor.
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 126 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 135 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh

@@ -9,6 +9,7 @@
 (require 'gptel-openai)
 (require 'emacs-agent-session)
 (require 'emacs-agent-context)
+(require 'emacs-agent-usage)
 
 (defvar emacs-agent-system-prompt)
 
@@ -233,7 +234,14 @@ reset/cleanup support is added, so gptel can finish its own FSM safely."
     (emacs-agent-gptel--flush-assistant run)
     (setf (emacs-agent-run-status run) status
           (emacs-agent-run-pending-tools run) nil)
+    ;; A stream parser can update usage on [DONE] without delivering a text
+    ;; callback.  Capture FSM info before abort/terminal guards discard it.
+    (emacs-agent-usage-end
+     run status (when (gptel-fsm-p (emacs-agent-run-request-handle run))
+                  (gptel-fsm-info (emacs-agent-run-request-handle run))))
     (let ((session (emacs-agent-run-session run)))
+      (when (emacs-agent-run-usage-requests run)
+        (emacs-agent-session-record run 'usage-total (emacs-agent-usage-summary run)))
       (emacs-agent-session-record run status (or detail (symbol-name status)))
       ;; Mark terminal BEFORE abort, whose callback can arrive synchronously.
       (when (and (not (eq status 'completed))
@@ -313,14 +321,39 @@ This is a request-local FSM handler: gptel's global handlers are untouched."
                                                            (plist-get info :status)
                                                            "Request failed"))))))))
 
+(defun emacs-agent-gptel--usage-begin (run fsm)
+  "Open usage accounting before FSM starts a new HTTP request for RUN."
+  (when (emacs-agent-gptel--live-p run)
+    (emacs-agent-usage-begin run)
+    ;; Also clear before protocol restoration, which can fail before gptel's
+    ;; own WAIT reset.  Never attribute the prior response to a failed attempt.
+    (plist-put (gptel-fsm-info fsm) :tokens nil)))
+
+(defun emacs-agent-gptel--usage-end (run fsm)
+  "Capture completed HTTP usage before FSM dispatch can recurse or finish RUN."
+  (when (emacs-agent-gptel--live-p run)
+    ;; Keep assistant-end adjacent to the final text delta in durable blocks.
+    ;; Non-streaming responses need not send the streaming `t' callback.
+    (emacs-agent-gptel--flush-assistant run)
+    (emacs-agent-usage-end
+     run (pcase (gptel-fsm-state fsm) ('ERRS 'failed) ('ABRT 'cancelled) (_ 'received))
+     (gptel-fsm-info fsm))))
+
 (defun emacs-agent-gptel--make-fsm (run)
-  "Make RUN's private FSM with appended terminal handlers.
-Slot access and terminal state names are isolated pinned-gptel contracts."
+  "Make RUN's private FSM with usage boundaries and terminal handlers.
+Slot access and state names are isolated pinned-gptel contracts."
   (let ((fsm (gptel-make-fsm)))
     (setf (gptel-fsm-handlers fsm) (copy-tree (gptel-fsm-handlers fsm)))
     (setf (alist-get 'WAIT (gptel-fsm-handlers fsm))
-          (cons (apply-partially #'emacs-agent-gptel--restore-protocol run)
-                (alist-get 'WAIT (gptel-fsm-handlers fsm))))
+          (append (list (apply-partially #'emacs-agent-gptel--usage-begin run)
+                        (apply-partially #'emacs-agent-gptel--restore-protocol run))
+                  (alist-get 'WAIT (gptel-fsm-handlers fsm))))
+    ;; TYPE is too early for streams: headers arrive before body/usage parsing.
+    ;; TOOL must be observed BEFORE its default handler can start another WAIT.
+    (dolist (state '(TOOL DONE ERRS ABRT))
+      (setf (alist-get state (gptel-fsm-handlers fsm))
+            (cons (apply-partially #'emacs-agent-gptel--usage-end run)
+                  (alist-get state (gptel-fsm-handlers fsm)))))
     (dolist (state '(DONE ERRS ABRT))
       (setf (alist-get state (gptel-fsm-handlers fsm))
             (append (alist-get state (gptel-fsm-handlers fsm))
@@ -332,6 +365,7 @@ Slot access and terminal state names are isolated pinned-gptel contracts."
   (when (emacs-agent-gptel--live-p run)
     (condition-case err
         (progn
+          (emacs-agent-usage-observe run info)
           (dolist (key '(:signature :reasoning_details :encrypted_content :thoughtSignature))
             (when (plist-get info key)
               (emacs-agent-gptel--unsupported run (format "Unsupported opaque response field: %s" key))))

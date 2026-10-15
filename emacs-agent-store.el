@@ -6,6 +6,7 @@
 
 ;;; Code:
 (require 'emacs-agent-session)
+(require 'emacs-agent-usage)
 (require 'pp)
 
 (defcustom emacs-agent-data-directory (expand-file-name "emacs-agent/" user-emacs-directory)
@@ -68,7 +69,8 @@ Reject cycles/closures instead of hanging or printing unreadable #<...> data."
         :model (format "%s" (emacs-agent-run-model run))
         :context-policy (emacs-agent-run-context-policy run)
         :stream (emacs-agent-run-stream run) :tool-count (emacs-agent-run-tool-count run)
-        :tool-budget (emacs-agent-run-tool-budget run)))
+        :tool-budget (emacs-agent-run-tool-budget run)
+        :usage (emacs-agent-usage-summary run)))
 
 (defun emacs-agent-store--text-event-p (event)
   "Whether EVENT is a string-valued assistant or reasoning fragment/block."
