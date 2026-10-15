@@ -389,8 +389,9 @@ Mock only the gptel dispatch callback tuples, including their reversed order."
                           run '(("helper-1" "(emacs-agent-read-lines (current-buffer) 3 3)"))))
                (wire (cdr (assoc "helper-1" (nth 2 delivery))))
                (result (read (substring wire 4))))
-          (should (equal (plist-get (car (plist-get result :lines)) :text) "live text"))
+          (should (equal (plist-get result :text) "live text"))
+          (should-not (plist-member result :lines))
           (should (equal (plist-get result :buffer) (buffer-name)))
-          (should (= (plist-get (car (plist-get result :lines)) :line) 3)))))))
+          (should (= (plist-get result :start-line) 3)))))))
 
 ;;; emacs-agent-gptel-test.el ends here

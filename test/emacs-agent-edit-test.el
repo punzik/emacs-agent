@@ -130,8 +130,8 @@
       (should (= tick (buffer-chars-modified-tick)))
       ;; Reread and use row coordinates, rather than blindly shifting offsets.
       (let* ((read (emacs-agent-read-lines (current-buffer) 2 3))
-             (row (car (plist-get read :lines)))
-             (position (plist-get row :end)))
+             (position (+ (plist-get read :start)
+                          (string-match "\n" (plist-get read :text)))))
         (emacs-agent-replace-region (current-buffer) position (1+ position) "\n" "\n\n"
                                    :tick (plist-get read :tick)))
       (should (equal (buffer-string) "prefix\n}\n\n/** comment */\n"))

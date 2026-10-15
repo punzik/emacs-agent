@@ -355,7 +355,7 @@ policy, transform/truncation isolation, unsupported backend preflight, opaque
 field poisoning, nested signatures and streaming batch order. Other providers
 are deliberately rejected, not claimed to have been integration-tested.
 
-## Post-MVP F0c: model I/O efficiency (first slice)
+## Post-MVP F0c: model I/O efficiency (first two slices)
 
 A user comparison found 37 vs 3 tool calls and 136,919 vs 3,483 characters of
 textual tool results. `buffer-string` had serialized font-lock/eglot properties;
@@ -372,15 +372,26 @@ or recursively rewrite arbitrary non-string Lisp values. Explicit printing
 inside evaluated Lisp is not intercepted. Tool definition/count, protocol
 history and gptel lifecycle are unchanged. The prompt now recommends plain
 reads, avoiding redundant whole-file reads and never mutating a buffer just
-to inspect it. Compact reads, batch exact-text edits and usage records remain
-pending; do not call this a completed token-efficiency fix.
+to inspect it. Compact read results are now implemented: one literal `:text` and range
+metadata, no `:lines` rows or line numbering. Internal newlines are preserved,
+the newline after requested END is excluded. Exclusive end is the continuation
+position; concatenate chunks without adding separators, including when split
+on a newline. Around retains `:at`. This intentionally changes the alpha helper
+API, without a compatibility mode. Batch exact-text edits and usage records
+remain pending; do not call this a completed token-efficiency fix.
 
-Validation: **99 offline ERT tests** and byte compilation with warnings-as-errors
+Validation: **103 offline ERT tests** and byte compilation with warnings-as-errors
 via `nix-shell -p gnumake --run 'make clean test compile'`. Tests cover properties
 without source/undo changes, huge property metadata under a small output budget,
 Unicode/empty strings, explicit property inspection/printing and real pinned
-gptel dry-run wire content. Existing stdout/errors/limits/replay tests pass.
-No real-provider comparison has been run after this slice.
+gptel dry-run wire content, including the actual compact-read tool message.
+Continuation coverage now includes newline characters, EOF empty lines,
+mid-line fragments and printed-budget shrinking with properties/escaping.
+Existing stdout/errors/limits/replay tests pass. A synthetic 100-line fixture
+shrinks from about 7,515 to 2,127 printed characters (~72%, not a token count).
+No real-provider comparison has been run after the compact-read slice. Reload
+`emacs-agent-helpers.el` and `emacs-agent.el` before testing; use a clean session
+for a fair size/usage comparison, since previous tool results are not rewritten.
 
 ## Post-MVP F0b: durable streaming blocks (schema 2)
 

@@ -1,8 +1,8 @@
 # ADR-0004: Экономный model I/O после сравнения с Pi
 
-Статус: направление принято пользователем; первый slice реализован offline.
-Компактное чтение, пакетные замены и usage требуют уточнения контрактов перед
-их реализацией. F0c имеет приоритет перед F1.
+Статус: направление и контракт компактного чтения приняты пользователем.
+Plain-string и компактное чтение реализованы offline. Пакетные замены
+и usage требуют уточнения контрактов до кода. F0c имеет приоритет перед F1.
 
 ## Контекст и наблюдения
 
@@ -63,7 +63,7 @@ contents, point, tick и undo не меняются. Небольшой поле
 свойством не должен усекаться из-за этого свойства. Явная инспекция свойств,
 нестроковые результаты, stdout/errors/limits продолжают работать.
 
-### 2. Компактный default для чтения — следующий slice
+### 2. Компактный default для чтения
 
 Metadata на диапазон, а не plist с несколькими координатами на каждую строку.
 Сохранить пустые строки, абсолютные координаты и надёжное продолжение, tick,
@@ -71,6 +71,28 @@ narrowing и bounded preview. Не потерять различие EOF/newline
 До кода определить точное представление (plain/numbered text или иной формат),
 поведение around и совместимость с чтением координат для edits. Не вводить
 скрытый summary, не обрезать старые tool results автоматически в history.
+
+Контракт принят пользователем после сравнения форматов Pi и Pigo: оба
+возвращают ненумерованный текст и краткое range/continuation notice, не
+per-line metadata. У нас metadata остаётся в одном plist вокруг `:text`:
+
+- Удалить per-line `:lines` plist из результата чтения, заменить одним `:text`
+  с точным текстом диапазона (включая внутренние newline и пустые строки).
+  Не добавлять альтернативный verbose mode без потребности.
+- Сохранить buffer metadata и `:requested-lines`, абсолютные `:start`/`:end`
+  (конец исключителен), `:tick`, `:truncated` и `:next-position`; добавить
+  `:start-line`/`:end-line` — строки позиций start/end. Поскольку end исключителен,
+  он может указывать на начало следующей строки после возвращённого newline.
+- Inclusive START..END означает от начала START до конца END, без newline
+  после END; terminal empty line сохраняется в координатах и тексте диапазона.
+- `:limit` ограничивает длину непрерывного текста. При усечении next-position
+  равен end; повтор с `:from`/`:tick` позволяет конкатенировать `:text` без
+  пропущенных/добавленных символов, в том числе при разрыве на newline.
+- Around использует тот же текстовый результат и прежний `:at` с явными
+  position/line/column/symbol. Narrowing, state preservation и output budget
+  остаются прежними. Для координат конкретной строки можно прочитать её отдельно.
+- Это намеренное изменение API в deep alpha; обновить docstrings, prompt,
+  README и tests, не вводить compatibility adapter для старого `:lines`.
 
 ### 3. Пакетные exact-text замены в живом буфере
 
@@ -96,7 +118,22 @@ OLD, перекрытия, порядок применения, expected tick, �
 и 10 символами текста возвращает полный короткий plain-text result вместо
 усечения из-за свойства. Проверен actual pinned-gptel dry-run wire tool content;
 его стандартное trimming framing whitespace не менялось. Source properties,
-contents, tick, point и undo сохраняются. Нового live-сравнения пока нет.
+contents, tick, point и undo сохраняются.
+
+Промежуточный live-тест после первого slice: 8 tools/25736 символов результатов
+вместо 37/136919, без property dumps и destructive recovery; но buffer-string
+не вызывался, так что это не прямое доказательство stripping в live. Почти весь
+вывод пришёлся на verbose read helpers. Модель сгруппировала прямые insert/delete
+без helper/atomicity и оставила буфер несохранённым; это не завершённый F0c.
+
+Компактное чтение: полный прогон — 103 ERT, warnings-as-errors проходят.
+Actual pinned-gptel dry-run проверяет один `:text` с диапазоном в tool content,
+без per-line rows. Coverage проверяет все символы, включая newline, продолжение
+по limit и печатному budget, EOF/empty lines, around/narrowing и обе исходные
+регрессии F0; edit regression обновлён на BASE+string-index внутри :text.
+Синтетический fixture 100 строк: 7515 → 2127 printed characters (~72% меньше).
+Это не token count и не прогноз числа запросов; длина имени буфера/tick слегка
+меняет точные числа. Live smoke компактного чтения ещё не запускался.
 
 
 Каждый slice — полный ERT и byte compilation с warnings-as-errors. Синтетические

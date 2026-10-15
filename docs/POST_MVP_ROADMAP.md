@@ -1,7 +1,7 @@
 # Emacs Agent после MVP: выводы из Pi/Pigo и план развития
 
 **Статус:** F0 и F0b реализованы; начат F0c — экономный model I/O.
-99 offline ERT и byte compilation с
+103 offline ERT и byte compilation с
 warnings-as-errors проходят. Для буферного редактирования F0 есть пользовательский
 live smoke и подтверждение undo; отдельный live smoke F0b ещё не выполнялся.
 Остальные post-MVP этапы не реализованы.
@@ -404,9 +404,13 @@ text properties в `buffer-string` (2823 → 32768 символов с усеч�
    добавлено plain-text чтение без повторных whole-file reads и запрет
    мутировать буфер ради проверки. 99 ERT, включая actual wire regression,
    и warnings-as-errors; real-provider smoke нового поведения ещё не запускался.
-2. **Далее согласовать и реализовать:** компактное default чтение с metadata
-   на диапазон, сохранением пустых строк, tick, EOF/narrowing и продолжения.
-   Формат и способы получения координат определить до кода.
+2. **Согласовано и реализовано offline:** компактное default чтение — один
+   `:text` с metadata на диапазон, пустыми строками, tick, EOF/narrowing и
+   lossless продолжением, включая разрыв на newline. `:start-line`/`:end-line`
+   описывают абсолютные позиции `:start`/exclusive `:end`. Старый `:lines`
+   удалён без compatibility mode. Around сохраняет `:at`. 103 ERT и compile
+   проходят; синтетические 100 строк: ~7515 → 2127 printed characters (~72%).
+   Новый live smoke этого формата ещё не запускался.
 3. **Далее согласовать и реализовать:** пакетные exact-text OLD/NEW замены в
    живом буфере, без ручных offsets; атомарность/undo/stale checks не ослаблять.
    Определить уникальность, порядок/перекрытия и all-or-nothing контракт.
@@ -642,7 +646,7 @@ late callbacks и независимость старой ветви; UI явн�
 |---|---|---|
 | F0 | Helpers: сигнатуры, структурированный результат, narrowing и EOF | Принято: [ADR-0001](adr/0001-f0-buffer-helpers.md); абсолютные координаты, явный widening, terminal empty line, plist с продолжением |
 | F0b | Durable blocks, partial markers, identifiers/timestamps | Принято: [ADR-0003](adr/0003-durable-streaming-blocks.md); schema 2, snapshot-only, partial checkpoints, без миграции/обратной совместимости |
-| F0c | Экономный model I/O, пакетные OLD/NEW edits, usage | [ADR-0004](adr/0004-efficient-model-io.md); plain-string slice реализован, остальные контракты согласовать до кода |
+| F0c | Экономный model I/O, пакетные OLD/NEW edits, usage | [ADR-0004](adr/0004-efficient-model-io.md); plain strings и compact reads реализованы, batch edits/usage согласовать до кода |
 | F1 | Собственные roots или чтение `.pi`/`.pigo`? | Настраиваемые roots агента; существующие ресурсы подключать явно, не смешивать автоматически |
 | F1 | Читать инструкции всех filesystem ancestors или только scope? | Global + project root → directory source buffer; для global и TRAMP согласовать отдельно |
 | F1 | Template syntax и история ввода | Один формат, например именованные `{{name}}`; явно показывать expansion/provenance, не auto-detect несколько диалектов |
@@ -684,8 +688,8 @@ loading. Любые новые пользовательские настройк
 7. После каждого этапа обновить README/интеграционные ограничения, зафиксировать
    проверенные факты и оставшиеся вопросы. Коммит — только по запросу пользователя.
 
-**Рекомендуемый следующий шаг:** продолжить F0c: согласовать компактный формат
-чтения, затем пакетные exact-text edits и точный usage accounting. Opt-in
+**Рекомендуемый следующий шаг:** продолжить F0c: согласовать пакетные exact-text
+edits и точный usage accounting. Компактное чтение уже реализовано. Opt-in
 live smoke сравнивать на одинаковом исходнике/модели с учётом cache. После F0c
 вернуться к трём решениям F1 (roots, hierarchy, template syntax). Большая
 перестройка ядра для этого не требуется.

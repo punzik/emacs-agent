@@ -3,8 +3,8 @@
 (require 'emacs-agent)
 
 (defun emacs-agent-helpers-test--texts (result)
-  "Extract row texts from RESULT."
-  (mapcar (lambda (row) (plist-get row :text)) (plist-get result :lines)))
+  "Split RESULT text while preserving all empty lines."
+  (split-string (plist-get result :text) "\n" nil))
 
 (ert-deftest emacs-agent-helpers-empty-lines-and-eof ()
   (dolist (case '(("" ("")) ("\n\na\n\nb\n" ("" "" "a" "" "b" ""))
@@ -16,11 +16,10 @@
         (should (equal (emacs-agent-helpers-test--texts result) texts))
         (should-not (plist-get result :truncated))
         (should (= (plist-get result :end) (point-max)))
-        (cl-loop for row in (plist-get result :lines) for n from 1 do
-                 (should (= (plist-get row :line) n))
-                 (should (equal (plist-get row :text)
-                                (buffer-substring-no-properties
-                                 (plist-get row :start) (plist-get row :end)))))
+        (should-not (plist-member result :lines))
+        (should (= (plist-get result :start-line) 1))
+        (should (= (plist-get result :end-line) (length texts)))
+        (should (equal (plist-get result :text) (buffer-string)))
         (should-error (emacs-agent-read-lines (current-buffer) 1 (1+ (length texts))))
         (let ((around (emacs-agent-read-around (current-buffer) (point-max))))
           (should (= (plist-get (plist-get around :at) :line) (length texts))))))))
@@ -130,15 +129,15 @@
       (while (progn
                (setq result (emacs-agent-read-lines (current-buffer) 1 6
                                                     :limit 3 :from from))
-               (dolist (row (plist-get result :lines))
-                 (push (cons (plist-get row :start) (plist-get row :text)) positions))
+               (push (cons (plist-get result :start) (plist-get result :text)) positions)
+               (should (= (plist-get result :end)
+                          (+ (plist-get result :start) (length (plist-get result :text)))))
                (setq from (plist-get result :next-position))))
-      ;; Each character (including the empty lines) is represented at its
-      ;; original coordinate; no returned fragment is duplicated or skipped.
+      ;; Concatenation preserves every character, including all newlines.
       (setq positions (nreverse positions))
       (dolist (item positions) (setq joined (concat joined (cdr item))))
-      (should (equal joined "abcdefλxyz"))
-      (should (equal (mapcar #'car positions) '(1 2 3 4 7 10 11 13 16)))
+      (should (equal joined (buffer-string)))
+      (should (equal (mapcar #'car positions) '(1 4 7 10 13)))
       (should-not (plist-get result :truncated)))))
 
 (ert-deftest emacs-agent-helpers-evaluator-budget ()
@@ -157,7 +156,7 @@
       (should-error (emacs-agent-buffer-info (current-buffer))))))
 
 (ert-deftest emacs-agent-helpers-continuation-coverage ()
-  "Many small budgets preserve every non-newline character exactly once."
+  "Many small budgets preserve every character, including newlines, once."
   (dolist (limit '(1 2 3 4 7 32))
     (with-temp-buffer
       (insert "\n\n\tλ\"abc\n\nend\n")
@@ -166,16 +165,86 @@
                  (should (< (cl-incf steps) 100))
                  (setq result (emacs-agent-read-lines (current-buffer) 1 6
                                                       :limit limit :from from))
-                 (dolist (row (plist-get result :lines))
-                   (cl-loop for pos from (plist-get row :start) below (plist-get row :end)
-                            do (should-not (gethash pos seen))
-                            do (puthash pos (char-after pos) seen)))
+                 (should (equal (plist-get result :text)
+                                (buffer-substring-no-properties
+                                 (plist-get result :start) (plist-get result :end))))
+                 (should (= (plist-get result :start-line)
+                            (line-number-at-pos (plist-get result :start) t)))
+                 (should (= (plist-get result :end-line)
+                            (line-number-at-pos (plist-get result :end) t)))
+                 (cl-loop for pos from (plist-get result :start) below (plist-get result :end)
+                          do (should-not (gethash pos seen))
+                          do (puthash pos (char-after pos) seen))
                  (let ((next (plist-get result :next-position)))
-                   (when next (should (> next (or from 0))))
+                   (when next
+                     (should (= next (plist-get result :end)))
+                     (should (> next (or from 0))))
                    (setq from next))))
         (cl-loop for pos from 1 below (point-max)
-                 unless (= (char-after pos) ?\n)
                  do (should (eql (gethash pos seen) (char-after pos))))))))
+
+(ert-deftest emacs-agent-helpers-range-newline-and-empty-continuation ()
+  (with-temp-buffer
+    (insert "a\n\nb\n")
+    (let* ((first (emacs-agent-read-lines (current-buffer) 1 2 :limit 1))
+           (second (emacs-agent-read-lines (current-buffer) 1 2 :limit 1
+                                          :from (plist-get first :next-position)
+                                          :tick (plist-get first :tick)))
+           (empty (emacs-agent-read-lines (current-buffer) 1 2
+                                         :from (plist-get second :end))))
+      (should (equal (plist-get first :text) "a"))
+      (should (= (plist-get first :end) 2))
+      (should (= (plist-get first :end-line) 1))
+      (should (equal (plist-get second :text) "\n"))
+      (should (= (plist-get second :end-line) 2))
+      (should-not (plist-get second :truncated))
+      (should (equal (plist-get empty :text) ""))
+      (should-not (plist-get empty :truncated))
+      ;; The newline after requested END is excluded, not silently consumed.
+      (should (= (plist-get second :end) 3))
+      (should (equal (plist-get (emacs-agent-read-lines (current-buffer) 2 2) :text) ""))
+      (should (equal (plist-get (emacs-agent-read-lines (current-buffer) 1 4) :text)
+                     (buffer-string))))))
+
+(ert-deftest emacs-agent-helpers-printed-budget-continuation-is-lossless ()
+  (with-temp-buffer
+    (dotimes (_ 200) (insert "λ\"\\\t\n"))
+    (put-text-property (point-min) (point-max) 'synthetic-property (make-string 5000 ?x))
+    (let ((emacs-agent-eval-output-limit 600) (joined "") from (steps 0) result)
+      (while (progn
+               (should (< (cl-incf steps) 200))
+               (setq result (emacs-agent-read-lines (current-buffer) 1 201 :from from))
+               (let ((print-length nil) (print-level nil) (print-circle t))
+                 (should (<= (+ 4 (length (prin1-to-string result))) 600)))
+               (should-not (text-properties-at 0 (plist-get result :text)))
+               (setq joined (concat joined (plist-get result :text))
+                     from (plist-get result :next-position))))
+      (should (> steps 1))
+      (should (equal joined (buffer-substring-no-properties (point-min) (point-max)))))))
+
+(ert-deftest emacs-agent-helpers-compact-output-size ()
+  (with-temp-buffer
+    (dotimes (i 100) (insert (format "int value_%d = %d;\n" i i)))
+    (let* ((result (emacs-agent-read-lines (current-buffer) 1 100))
+           (print-length nil) (print-level nil) (print-circle t)
+           ;; Reconstruct the old per-line representation on synthetic text.
+           (old (cl-loop for (key value) on result by #'cddr
+                         unless (memq key '(:text :start-line :end-line))
+                         append (list key value)))
+           rows)
+      (save-excursion
+        (goto-char (point-min))
+        (dotimes (i 100)
+          (push (list :line (1+ i) :start (point) :end (line-end-position)
+                      :line-end (line-end-position)
+                      :text (buffer-substring-no-properties (point) (line-end-position))) rows)
+          (forward-line 1)))
+      (setq old (append old (list :lines (nreverse rows))))
+      (let ((before (length (prin1-to-string old)))
+            (after (length (prin1-to-string result))))
+        (should (< after (/ before 2)))
+        (should (< (- after (length (plist-get result :text))) 600))
+        (message "F0c synthetic read: %d -> %d printed characters" before after)))))
 
 (ert-deftest emacs-agent-helpers-loaded-with-one-tool ()
   (should (featurep 'emacs-agent-helpers))

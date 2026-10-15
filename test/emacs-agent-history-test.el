@@ -172,4 +172,23 @@
         (should-not (string-match-p "synthetic-private-property" (gptel--json-encode data)))
         (should (= (length (get-text-property (point-min) 'synthetic-private-property)) 40000))))))
 
+(ert-deftest emacs-agent-history-compact-read-text-in-real-wire ()
+  (emacs-agent-test-adapter
+    (with-temp-buffer
+      (insert "a\n\nλ\n")
+      (let* ((run (emacs-agent-test--submit "read source"))
+             (delivery (emacs-agent-test--calls
+                        run '(("compact-read" "(emacs-agent-read-lines (current-buffer) 1 4)"))))
+             (result (cdr (assoc "compact-read" (nth 2 delivery))))
+             (data (emacs-agent-test--wire run nil))
+             (tool (seq-find (lambda (m) (equal (plist-get m :role) "tool"))
+                             (plist-get data :messages)))
+             (parsed (read (substring result 4))))
+        (should (equal (plist-get tool :content) (string-trim result)))
+        (should (equal (plist-get parsed :text) "a\n\nλ\n"))
+        (should-not (plist-member parsed :lines))
+        (should (= (plist-get parsed :start) 1))
+        (should (= (plist-get parsed :end) (point-max)))
+        (should (= (plist-get parsed :end-line) 4))))))
+
 ;;; emacs-agent-history-test.el ends here

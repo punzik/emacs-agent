@@ -67,7 +67,7 @@ Caller has established the accessible restriction."
     (error "Invalid line range or text limit"))
   (let* ((low (point-min)) (high (point-max))
          (info (emacs-agent-helpers--info))
-         begin finish rows next result)
+         begin finish result)
     (save-excursion
       (save-restriction
         (widen)
@@ -85,45 +85,37 @@ Caller has established the accessible restriction."
           (unless (and (integerp from) (<= begin from finish))
             (error "Invalid continuation position"))
           (setq begin from))
-        ;; Shrink by text budget until the *printed* plist fits as well.
-        ;; Escaping Unicode, quotes and newlines is accounted for by printing.
-        (let ((budget limit) fitted)
+        ;; One literal substring, including separators: every continuation
+        ;; starts exactly where the previous one ended, even on a newline.
+        (let ((budget (min limit (- finish begin))) fitted)
           (while (not fitted)
-            (goto-char begin)
-            (setq rows nil next nil)
-            (let ((remaining budget) (done nil))
-              (while (not done)
-                (let* ((pos (point)) (eol (min finish (line-end-position)))
-                       (stop (min eol (+ pos remaining))))
-                  (push (list :line (line-number-at-pos pos t)
-                              :start pos :end stop :line-end eol
-                              :text (buffer-substring-no-properties pos stop)) rows)
-                  (setq remaining (- remaining (- stop pos)))
-                  (cond
-                   ((< stop eol) (setq next stop done t))
-                   ((= eol finish) (setq done t))
-                   ((<= remaining 1) (setq next (1+ eol) done t))
-                   (t (setq remaining (1- remaining)) (goto-char (1+ eol)))))))
-            (setq result (append info extra
-                                 (list :requested-lines (list start end)
-                                       :start begin :end (plist-get (car rows) :end)
-                                       :truncated (and next t) :next-position next
-                                       :lines (nreverse rows))))
-            (if (and (emacs-agent-helpers--fit result)
-                     (not (eql next begin)))
-                (setq fitted t)
-              (if (= budget 0)
-                  (error "eval output limit too small for helper metadata")
-                (setq budget (/ budget 2))))))))
+            (let* ((stop (+ begin budget))
+                   (next (and (< stop finish) stop)))
+              (setq result
+                    (append info extra
+                            (list :requested-lines (list start end)
+                                  :start begin :end stop
+                                  :start-line (line-number-at-pos begin t)
+                                  :end-line (line-number-at-pos stop t)
+                                  :truncated (and next t) :next-position next
+                                  :text (buffer-substring-no-properties begin stop))))
+              (if (emacs-agent-helpers--fit result) (setq fitted t)
+                (if (<= budget 1)
+                    (error "eval output limit too small for helper metadata")
+                  (setq budget (max 1 (/ budget 2))))))))))
     result))
 
 (cl-defun emacs-agent-read-lines (buffer start end &key widen (limit 4096) from tick)
   "Read inclusive absolute START..END lines of live BUFFER.
 Preserve empty lines, including the terminal empty line after a newline.
-Each row contains absolute :line, :start, exclusive :end, :line-end and :text
-without newline.  :end may precede :line-end on truncation.  LIMIT bounds text
-characters (newline separators count too).  :next-position resumes with FROM
-and the same START/END; pass returned :tick as TICK to detect intervening edits.
+Return one literal :text substring, with metadata once per range, no per-line
+rows or numbering.  Internal newlines are preserved; the newline after END is
+not included.  :start/:end are absolute positions, end exclusive;
+:start-line/:end-line are the lines of those positions.  After a returned
+newline, end may be at the beginning of the next line.  LIMIT bounds text
+characters including newlines.  :next-position equals end when truncated:
+resume with FROM and the same START/END, then concatenate :text without adding
+separators.  Pass returned :tick as TICK to detect intervening edits.
 WIDEN permits reading outside narrowing, which is always restored.  Without
 it, even partially inaccessible lines are rejected.  No silent clamping.
 The printed result fits `emacs-agent-eval-output-limit' when used as the sole

@@ -105,8 +105,9 @@ mutate a buffer just to inspect or verify it. Explicit property inspection,
 non-string Lisp values and explicit `prin1` output retain their semantics.
 Output limits still apply to the useful text.
 
-The remaining F0c work is compact read results, batch exact-text buffer edits
-and cache-aware usage accounting; these are not yet implemented. F0b optimizes
+Read results now use one literal `:text` plus range metadata, without per-line
+plists. Remaining F0c work is batch exact-text buffer edits and cache-aware
+usage accounting; these are not yet implemented. F0b optimizes
 the disk archive, not the model's history. Findings and contracts:
 [ADR-0004](docs/adr/0004-efficient-model-io.md). Token savings must be measured
 with the same model/settings and comparable usage/cache metrics.
@@ -130,12 +131,17 @@ positions. Empty lines count, including the last empty line after a newline.
 Without explicit `:widen t`, inaccessible or partially inaccessible lines are
 rejected, not silently clipped. Invalid ranges/positions and dead buffers fail.
 
-Results are plists with buffer metadata and `:lines` rows containing `:line`,
-`:start`, exclusive `:end`, full `:line-end`, and `:text` without newline.
-Around adds `:at` with coordinates and symbol at the supplied position.
+Results are plists with buffer metadata once and one literal `:text`, without
+numbering or per-line rows. `:start`/exclusive `:end` are buffer positions;
+`:start-line`/`:end-line` are the lines of those positions (end may be at the
+next line's beginning after a returned newline). Internal newlines and empty
+lines are preserved; the newline after requested END is excluded. Around adds
+`:at` with coordinates and symbol at the supplied position. The old `:lines`
+format was removed in deep alpha, without a compatibility mode.
 `:limit` defaults to 4096 text characters; printed-output budgeting can reduce
-it further. On `:truncated t`, resume with the same line range and
-`:from NEXT-POSITION :tick TICK` from the result. Supplying an old modification
+it further. On `:truncated t`, `:next-position` equals `:end`: resume with the
+same line range and `:from NEXT-POSITION :tick TICK` from the result, concatenating
+`:text` without adding separators, even if a chunk ends at/on a newline. Supplying an old modification
 tick fails after a text edit. Without an expected tick, a still-in-range old
 position cannot be identified as stale. Names can also be reused after a kill;
 these snapshots are not persistent identities or live markers.
@@ -305,7 +311,7 @@ normal minibuffer hooks/keymaps; the agent does not supply a custom editor.
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 99 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 103 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh
