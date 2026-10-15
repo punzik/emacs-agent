@@ -17,6 +17,7 @@
          (emacs-agent-session-event-functions nil)
          (emacs-agent-gptel--executing-tool nil)
          (emacs-agent-max-tool-calls 100)
+         (emacs-agent-final-response-lines 0)
          (emacs-agent-stream t)
          (emacs-agent-context-history 'current)
          (gptel-backend (gptel-make-openai "agent-offline" :host "offline.invalid" :key "unused"))

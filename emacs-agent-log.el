@@ -26,6 +26,76 @@ this setting to previously rendered sections."
   "Initially fold reasoning that the provider actually supplied."
   :type 'boolean :group 'emacs-agent)
 
+(defcustom emacs-agent-final-response-lines 3
+  "Maximum screen lines of the final answer shown as a temporary message.
+Zero disables the notification.  Full answers remain in the journal; previews
+are not duplicated into *Messages*.  Only successful run completion notifies."
+  :type 'natnum :group 'emacs-agent)
+
+(defcustom emacs-agent-final-response-part 'start
+  "Which part of a long final answer the temporary message shows."
+  :type '(choice (const :tag "Beginning" start) (const :tag "End" end))
+  :group 'emacs-agent)
+
+(defun emacs-agent-log--response-preview (text lines part window)
+  "Fit plain TEXT to LINES screen rows of WINDOW, taking PART.
+Ellipses mark omitted text and count within the limit.  No editor window,
+source buffer, journal or model message is modified."
+  (let* ((plain (string-trim (substring-no-properties text)))
+         (width (max 1 (1- (window-body-width window))))
+         (marker (truncate-string-to-width "..." width)))
+    (unless (string-empty-p plain)
+      (with-temp-buffer
+        (insert plain)
+        (setq-local truncate-lines nil word-wrap nil)
+        ;; Match echo-area tab expansion instead of inheriting a source mode.
+        (setq-local tab-width 8)
+        (untabify (point-min) (point-max))
+        (goto-char (point-min))
+        (vertical-motion lines window)
+        (if (= (point) (point-max))
+            (buffer-substring-no-properties (point-min) (point-max))
+          (if (eq part 'end)
+              (progn
+                ;; Start on the last actual character, not a virtual empty
+                ;; screen row when EOB sits exactly on a wrapping boundary.
+                (goto-char (1- (point-max)))
+                (vertical-motion (- (1- lines)) window)
+                (let* ((start (point))
+                       (row-end (save-excursion (vertical-motion 1 window) (point)))
+                       (row (string-trim-right
+                             (buffer-substring-no-properties start row-end) "\n"))
+                       (overflow (max 0 (- (+ (string-width row) (string-width marker)) width))))
+                  (move-to-column (+ (current-column) overflow))
+                  (concat marker (buffer-substring-no-properties (point) (point-max)))))
+            (goto-char (point-min))
+            (vertical-motion (1- lines) window)
+            (let ((column (+ (current-column) (- width (string-width marker)))))
+              (move-to-column column)
+              ;; A wide character can overshoot the requested column.
+              (while (> (current-column) column) (backward-char)))
+            (concat (buffer-substring-no-properties (point-min) (point)) marker)))))))
+
+(defun emacs-agent--notify-final (run)
+  "Temporarily echo RUN's final assistant answer, never tool-round commentary.
+Notification failures cannot strand a completed run or its FIFO."
+  (condition-case nil
+      (let* ((lines emacs-agent-final-response-lines)
+             (window (minibuffer-window))
+             ;; Do not search backwards: an empty final response after tools
+             ;; must not redisplay an earlier assistant/tool-round message.
+             (last (car (last (emacs-agent-session-messages (emacs-agent-run-session run))))))
+        (when (and (natnump lines) (> lines 0) (window-live-p window)
+                   (eq (plist-get last :role) 'assistant)
+                   (equal (plist-get last :run-id) (emacs-agent-run-id run)))
+          (when-let* ((preview (emacs-agent-log--response-preview
+                               (plist-get last :text) lines
+                               emacs-agent-final-response-part window)))
+            (let ((message-log-max nil) (max-mini-window-height lines)
+                  (resize-mini-windows t) (message-truncate-lines nil))
+              (message "%s" preview)))))
+    ((error quit) nil)))
+
 (defvar-local emacs-agent-log--cursor nil "Last consumed cons in the event list.")
 (defvar-local emacs-agent-log--tail nil "Last appendable text section, or nil.")
 

@@ -243,6 +243,7 @@ reset/cleanup support is added, so gptel can finish its own FSM safely."
       (when (emacs-agent-run-usage-requests run)
         (emacs-agent-session-record run 'usage-total (emacs-agent-usage-summary run)))
       (emacs-agent-session-record run status (or detail (symbol-name status)))
+      (when (eq status 'completed) (emacs-agent--notify-final run))
       ;; Mark terminal BEFORE abort, whose callback can arrive synchronously.
       (when (and (not (eq status 'completed))
                  (buffer-live-p (emacs-agent-run-transport-buffer run)))

@@ -1,7 +1,7 @@
 # Emacs Agent после MVP: выводы из Pi/Pigo и план развития
 
 **Статус:** F0, F0b, F0c и ограниченный F1 реализованы; следующий этап — F2.
-148 offline ERT и byte compilation с
+156 offline ERT и byte compilation с
 warnings-as-errors проходят. Для буферного редактирования F0 есть пользовательский
 live smoke и подтверждение undo; отдельный live smoke F0b ещё не выполнялся.
 Остальные post-MVP этапы не реализованы.
@@ -496,6 +496,18 @@ Continuation dry-run с настоящим TOOL→TRET→WAIT и подменё�
 input не читает resources; после restart новый run использует только новый
 snapshot, warnings остаются видимыми в journal/view. Live F1 smoke отдельно
 не запускался.
+
+### Дополнение UX — финальный ответ в echo area
+
+Реализовано по отдельному запросу пользователя между F1 и F2:
+`emacs-agent-final-response-lines` (3 screen rows, 0 отключает) и
+`emacs-agent-final-response-part` (`start`/`end`). Финальный completed ответ
+показывается временным `message`, без отдельного view и без дубликата в
+`*Messages*`; полный текст в journal/history не меняется. Учитываются wrapping,
+Unicode/tabs, marker внутри лимита. Intermediate/tool/reasoning и error/cancel
+не уведомляют; пустой final не подменяется прежним commentary. FIFO и late
+callbacks проверены, display failure не блокирует очередь. 156 ERT и compile
+прошли. Решения: [ADR-0006](adr/0006-final-response-echo.md).
 
 ### F2 — Steering и редактируемый ожидающий ввод
 

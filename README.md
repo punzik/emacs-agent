@@ -95,6 +95,22 @@ mid-turn. Filtering never mutates stored snapshots or history records.
 Ambient gptel prompt transforms and chat UI history truncation are disabled
 for the private transport only; user's gptel settings/hooks are unchanged.
 
+### Temporary final-answer message
+
+Successful completion echoes a short preview without opening a buffer. By
+default it shows the beginning, up to **3 screen lines** including wrapping
+and any `...` marker. The complete answer remains in the journal/history;
+reasoning, tool commentary and failed/cancelled runs do not notify.
+
+```elisp
+(setq emacs-agent-final-response-lines 3)   ; 0 disables the message
+(setq emacs-agent-final-response-part 'start) ; or 'end
+```
+
+This is a normal transient `message`, not a persistent minibuffer view or a
+separate timer. Previews are not copied into `*Messages*` and do not replay
+when the journal is reopened. See [ADR-0006](docs/adr/0006-final-response-echo.md).
+
 ### Project instructions (F1)
 
 New inputs read **one saved file from the project root only**, in this order:
@@ -384,7 +400,7 @@ normal minibuffer hooks/keymaps; the agent does not supply a custom editor.
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 148 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 156 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh
