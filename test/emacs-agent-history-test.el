@@ -154,4 +154,22 @@
         (should (eq (emacs-agent-run-status run) 'failed))
         (should (= (emacs-agent-run-tool-count run) 0))))))
 
+(ert-deftest emacs-agent-history-plain-buffer-result-in-real-wire ()
+  (emacs-agent-test-adapter
+    (with-temp-buffer
+      (insert "λ sample\n")
+      (put-text-property (point-min) (point-max) 'synthetic-private-property
+                         (make-string 40000 ?x))
+      (let* ((run (emacs-agent-test--submit "read source"))
+             (delivery (emacs-agent-test--calls run '(("plain-read" "(buffer-string)"))))
+             (result (cdr (assoc "plain-read" (nth 2 delivery))))
+             (data (emacs-agent-test--wire run nil))
+             (tool (seq-find (lambda (m) (equal (plist-get m :role) "tool"))
+                             (plist-get data :messages))))
+        (should (equal result "\n=> \"λ sample\n\""))
+        ;; Pinned gptel trims tool-result framing whitespace on the wire.
+        (should (equal (plist-get tool :content) (string-trim result)))
+        (should-not (string-match-p "synthetic-private-property" (gptel--json-encode data)))
+        (should (= (length (get-text-property (point-min) 'synthetic-private-property)) 40000))))))
+
 ;;; emacs-agent-history-test.el ends here

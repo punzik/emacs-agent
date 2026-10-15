@@ -28,7 +28,11 @@ Values below the notice length are treated as the notice length."
 Execution is unrestricted and synchronous, with lexical binding enabled.
 Previously evaluated forms are not rolled back if a later form fails.
 `princ' output is captured; `message' still goes to the normal message log.
-Successful nil is printed as `nil'; errors and quits are explicitly labelled."
+Successful nil is printed as `nil'; errors and quits are explicitly labelled.
+A string final value is printed without text properties, so ordinary buffer
+reads do not serialize font-lock/eglot metadata.  The source value is not
+mutated; inspect properties explicitly when needed.  Non-string values and
+explicit printing inside EXPRESSION retain their normal Lisp semantics."
   (let ((output (generate-new-buffer " *emacs-agent-eval-output*"))
         (input (generate-new-buffer " *emacs-agent-eval-input*"))
         (source (current-buffer))
@@ -56,10 +60,15 @@ Successful nil is printed as `nil'; errors and quits are explicitly labelled."
             (error (setq error-text
                          (format "ERROR %s: %s" (car err) (error-message-string err)))))
           (emacs-agent-eval--limit
-           (concat (with-current-buffer output (buffer-string))
+           (concat (with-current-buffer output
+                     (buffer-substring-no-properties (point-min) (point-max)))
                    (if error-text (concat "\n" error-text)
                      (let ((print-length nil) (print-level nil) (print-circle t))
-                       (concat "\n=> " (prin1-to-string value)))))))
+                       (concat "\n=> "
+                               (prin1-to-string
+                                (if (stringp value)
+                                    (substring-no-properties value)
+                                  value))))))))
       (kill-buffer input)
       (kill-buffer output))))
 

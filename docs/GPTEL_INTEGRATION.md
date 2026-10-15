@@ -355,6 +355,33 @@ policy, transform/truncation isolation, unsupported backend preflight, opaque
 field poisoning, nested signatures and streaming batch order. Other providers
 are deliberately rejected, not claimed to have been integration-tested.
 
+## Post-MVP F0c: model I/O efficiency (first slice)
+
+A user comparison found 37 vs 3 tool calls and 136,919 vs 3,483 characters of
+textual tool results. `buffer-string` had serialized font-lock/eglot properties;
+verbose per-line helper metadata, redundant reads and a destructive verification
+followed by recovery also contributed. These are character counts, not provider
+usage: the Emacs log does not record usage; Pi has 4,349 uncached input+output
+and 13,213 including cache reads. The actual model behind Emacs alias `main`
+was not established. Full evidence/remaining contracts:
+[ADR-0004](adr/0004-efficient-model-io.md). No private logs are test fixtures.
+
+The first slice strips properties from string final values before printing
+and reads captured stdout without properties; it does not mutate source data
+or recursively rewrite arbitrary non-string Lisp values. Explicit printing
+inside evaluated Lisp is not intercepted. Tool definition/count, protocol
+history and gptel lifecycle are unchanged. The prompt now recommends plain
+reads, avoiding redundant whole-file reads and never mutating a buffer just
+to inspect it. Compact reads, batch exact-text edits and usage records remain
+pending; do not call this a completed token-efficiency fix.
+
+Validation: **99 offline ERT tests** and byte compilation with warnings-as-errors
+via `nix-shell -p gnumake --run 'make clean test compile'`. Tests cover properties
+without source/undo changes, huge property metadata under a small output budget,
+Unicode/empty strings, explicit property inspection/printing and real pinned
+gptel dry-run wire content. Existing stdout/errors/limits/replay tests pass.
+No real-provider comparison has been run after this slice.
+
 ## Post-MVP F0b: durable streaming blocks (schema 2)
 
 The current store writes **schema 2**, pretty-printed Lisp data. Schema 1 is

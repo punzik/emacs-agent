@@ -11,6 +11,46 @@
   (let ((emacs-agent-eval-output-limit 20))
     (should (string-suffix-p "[truncated]" (emacs-agent-eval "(make-string 100 ?a)")))))
 
+(ert-deftest emacs-agent-eval-buffer-string-is-plain-without-source-changes ()
+  (with-temp-buffer
+    (insert "λ\tvalue\n\nend\n")
+    (add-text-properties (point-min) (point-max)
+                         '(face font-lock-keyword-face fontified t eglot--managed t))
+    (buffer-enable-undo)
+    (setq buffer-undo-list nil)
+    (let ((text (buffer-string))
+          (tick (buffer-chars-modified-tick))
+          (position (point))
+          (undo buffer-undo-list))
+      (should (equal (emacs-agent-eval "(buffer-string)")
+                     (concat "\n=> " (prin1-to-string (substring-no-properties text)))))
+      (should-not (string-match-p (regexp-quote "#(") (emacs-agent-eval "(buffer-string)")))
+      (should (equal-including-properties text (buffer-string)))
+      (should (= tick (buffer-chars-modified-tick)))
+      (should (= position (point)))
+      (should (eq undo buffer-undo-list))
+      (should (eq (get-text-property (point-min) 'face) 'font-lock-keyword-face)))))
+
+(ert-deftest emacs-agent-eval-property-size-does-not-truncate-useful-text ()
+  (with-temp-buffer
+    (insert "small text")
+    (put-text-property (point-min) (point-max) 'synthetic-metadata (make-string 50000 ?x))
+    (let ((emacs-agent-eval-output-limit 64))
+      (should (equal (emacs-agent-eval "(buffer-string)") "\n=> \"small text\""))
+      (should (= (length (get-text-property (point-min) 'synthetic-metadata)) 50000)))))
+
+(ert-deftest emacs-agent-eval-plain-string-scope-and-explicit-properties ()
+  (should (equal (emacs-agent-eval "(propertize \"\" 'face 'bold)") "\n=> \"\""))
+  ;; Explicit property inspection and non-string objects are still ordinary Lisp.
+  (should (equal (emacs-agent-eval "(get-text-property 0 'face (propertize \"x\" 'face 'bold))")
+                 "\n=> bold"))
+  (should (equal (emacs-agent-eval "(list (propertize \"x\" 'face 'bold))")
+                 "\n=> (#(\"x\" 0 1 (face bold)))"))
+  (should (equal (emacs-agent-eval "(prin1 (propertize \"x\" 'face 'bold)) nil")
+                 "#(\"x\" 0 1 (face bold))\n=> nil"))
+  (should (equal (emacs-agent-eval "(princ (propertize \"λ\\n\" 'face 'bold)) \"ok\"")
+                 "λ\n\n=> \"ok\"")))
+
 (ert-deftest emacs-agent-spike-fixed-tool-loop ()
   "Mock gptel-request, not Lisp execution: two calls, then final text."
   (let ((original-tools gptel-tools)

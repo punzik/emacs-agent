@@ -95,6 +95,22 @@ mid-turn. Filtering never mutates stored snapshots or history records.
 Ambient gptel prompt transforms and chat UI history truncation are disabled
 for the private transport only; user's gptel settings/hooks are unchanged.
 
+### Model I/O efficiency (F0c, in progress)
+
+A string final value from `eval_elisp` is printed without text properties.
+For example, returning `(buffer-string)` no longer serializes font-lock/eglot
+metadata into the model context. Source strings/buffers are not modified.
+Use `buffer-substring-no-properties` for explicit plain-text reads; do not
+mutate a buffer just to inspect or verify it. Explicit property inspection,
+non-string Lisp values and explicit `prin1` output retain their semantics.
+Output limits still apply to the useful text.
+
+The remaining F0c work is compact read results, batch exact-text buffer edits
+and cache-aware usage accounting; these are not yet implemented. F0b optimizes
+the disk archive, not the model's history. Findings and contracts:
+[ADR-0004](docs/adr/0004-efficient-model-io.md). Token savings must be measured
+with the same model/settings and comparable usage/cache metrics.
+
 ### Reading live buffers (F0)
 
 Loading `emacs-agent` also loads three ordinary Lisp helpers, usable through
@@ -289,7 +305,7 @@ normal minibuffer hooks/keymaps; the agent does not supply a custom editor.
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 95 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 99 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh
