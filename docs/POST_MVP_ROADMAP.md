@@ -1,7 +1,7 @@
 # Emacs Agent после MVP: выводы из Pi/Pigo и план развития
 
 **Статус:** результаты исследования и план; F0 реализован и проверен offline
-(69 ERT, byte compilation с warnings-as-errors). Opt-in live smoke F0 ещё не
+(83 ERT с дополнением буферного редактирования, byte compilation с warnings-as-errors). Opt-in live smoke F0 ещё не
 выполнялся. Остальные post-MVP этапы не реализованы.
 
 **Основание:** обсуждение после завершения MVP, этапов 0–5.
@@ -227,6 +227,21 @@ F1–F5 не требуют заранее строить session tree или fr
 Названия новых команд/файлов ниже предварительные.
 
 ### F0 — Проверенные Elisp helpers для чтения и навигации
+
+**Дополнение по результатам live-теста:** helper `emacs-agent-replace-region`
+и правила штатного сохранения/undo —
+[ADR-0002](adr/0002-buffer-native-editing.md). Сессия выявила не обход буфера,
+а `write-region` без VISIT + ручное снятие modified, оставлявшие stale modtime.
+Теперь есть проверенная атомарная замена диапазона с ожидаемыми текстом/tick,
+отдельным undo-шагом и явным `save-buffer` после неё. Это обычный helper через
+`eval_elisp`, не новый tool или sandbox. Повторный live-тест подтвердил вызовы
+helper и `save-buffer`, но выявил путаницу string indices/buffer positions и
+обход отказа прямым `insert`. В prompt добавлены правила BASE+I и перечитывания
+после отказа, а ошибка OLD показывает bounded actual-text preview; см. ADR-0002.
+Всего 83 offline ERT. Последующий пользовательский live smoke подтвердил
+шесть замен через helper, перечитывание после OLD mismatch без обхода и
+штатный `save-buffer`; пользователь подтвердил undo. Итоговый file-modtime
+отдельно не измерялся. F0b остаётся следующим отдельным этапом.
 
 **Реализация:** `emacs-agent-helpers.el`, контракт —
 [ADR-0001](adr/0001-f0-buffer-helpers.md). Загружаются вместе с `emacs-agent`;

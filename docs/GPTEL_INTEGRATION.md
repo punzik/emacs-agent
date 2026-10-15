@@ -1,5 +1,32 @@
 # gptel integration — stage 0
 
+## Post-MVP: buffer-native editing and undo
+
+`emacs-agent-replace-region` is an ordinary Lisp helper invoked through the
+same unrestricted `eval_elisp`. It checks exact old text and an expected tick,
+edits the live buffer as one atomic undo step, and never writes disk itself.
+Save explicitly with `save-buffer`, which also updates visited-file modtime.
+The system prompt now documents this protocol and warns against fake saves,
+external writes to visited files, clearing undo or routine revert.
+
+[ADR-0002](adr/0002-buffer-native-editing.md) records the session evidence and
+contract. Regression tests reproduce the logged three-argument `write-region`
+plus `set-buffer-modified-p nil` bug and verify save/undo/file-modtime behavior.
+The follow-up prompt explains zero-based string indices vs buffer positions,
+including a narrowed buffer's capture-time `point-min`. OLD mismatch errors
+show a bounded escaped actual-text preview; models are told to reread rather
+than guess offsets or bypass a rejection. This is guidance, not enforcement.
+Validation: 83 offline ERT tests and warning-as-error byte compilation via
+`nix-shell -p gnumake --run 'make clean test compile'`. A subsequent user-run
+live session confirms six helper replacements, rereading after OLD mismatch
+without bypassing the helper, and saving through `save-buffer`. The user also
+confirmed that undo works. Post-save file-modtime was not explicitly measured.
+For repeatable smoke in a disposable visited file: make a user edit, ask the model for a small helper replacement
+and explicit save, check that no reload warning appears, undo the helper
+replacement and then the earlier user edit separately. Do not use real work
+files for this test. Reload updated Lisp definitions before testing in an
+already-running Emacs; an existing in-flight request retains its old prompt.
+
 ## Post-MVP F0: live buffer helpers
 
 `emacs-agent` now loads `emacs-agent-helpers.el`: ordinary Lisp functions for

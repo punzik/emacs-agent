@@ -1,9 +1,10 @@
-;;; emacs-agent-helpers.el --- Read live buffers reliably -*- lexical-binding: t; -*-
+;;; emacs-agent-helpers.el --- Read and edit live buffers reliably -*- lexical-binding: t; -*-
 
 ;; Package-Requires: ((emacs "28.1"))
 
 ;;; Commentary:
-;; Ordinary Lisp helpers, not additional tools.  No editor state is changed.
+;; Ordinary Lisp helpers, not additional tools.  Reads preserve editor state;
+;; explicit replacements use native buffer undo, never direct disk writes.
 
 ;;; Code:
 (require 'cl-lib)
@@ -171,6 +172,82 @@ POSITION, not at the user's point.  Other options follow
           (emacs-agent-helpers--read
            (max first (- line before)) (min last (+ line after)) nil limit
            (list :at (append (list :position position :symbol symbol) at))))))))
+
+(cl-defun emacs-agent-replace-region (buffer start end old new &key tick widen)
+  "Replace explicit START..END in live BUFFER from OLD to NEW, with undo.
+END is exclusive; positions are absolute character positions.  OLD must match
+exactly, without text properties.  For insertion use START=END and OLD empty;
+for deletion use NEW empty.  TICK is a required integer expected modification
+tick, as returned by reading helpers.  Buffer positions start at 1, but string
+indices start at 0: index I in text captured from buffer position BASE maps to
+BASE+I, even under narrowing.  Prefer coordinates from reading helpers.
+On OLD mismatch, the error shows at most 160 actual text characters (escaped
+for readability), the range and current tick.  Reread before retrying; do not
+guess offsets or bypass the helper.  Stale text/tick, disabled undo, read-only
+buffers and external visited-file changes signal errors before editing.
+Narrowing is respected unless WIDEN is explicitly non-nil, and restored.
+
+The replacement is one atomic undo step, separate from previous user edits.
+Point/mark and restrictions track edits as Emacs markers, not frozen numbers.
+Normal change hooks run; errors roll back this buffer's text, not arbitrary
+hook side effects elsewhere.  Identical OLD/NEW is a no-op.  Return a plist
+with :buffer, :start, :end of the new range, :tick, :modified and :changed.
+The printed result is budgeted like reading helpers; a budget error rolls
+back the replacement.  Use as the sole final form without stdout.
+
+This does NOT save.  Save explicitly in BUFFER with `save-buffer', never
+fake saving with `set-buffer-modified-p' or direct `write-region'.  A later
+save error leaves the successfully edited buffer available for inspection.
+Undo follows normal Emacs lifetime/size limits, not persistent disk history."
+  (unless (and (integerp start) (integerp end) (<= start end)
+               (stringp old) (stringp new) (integerp tick))
+    (error "Expected positions, OLD/NEW strings and explicit integer :tick"))
+  (with-current-buffer (emacs-agent-helpers--buffer buffer)
+    (emacs-agent-helpers--tick tick)
+    (when buffer-read-only (error "Buffer is read-only"))
+    (when (eq buffer-undo-list t) (error "Undo is disabled in buffer"))
+    (when (and buffer-file-name (not (verify-visited-file-modtime)))
+      (error "Visited file changed on disk; resolve conflict before editing"))
+    (save-mark-and-excursion
+      (save-restriction
+        (when widen (widen))
+        (unless (<= (point-min) start end (point-max))
+          (error "Replacement range outside accessible buffer"))
+        (unless (equal old (buffer-substring-no-properties start end))
+          (let* ((preview-end (min end (+ start 160)))
+                 (print-length nil) (print-level nil)
+                 (print-escape-newlines t) (print-escape-control-characters t)
+                 (actual (prin1-to-string
+                          (buffer-substring-no-properties start preview-end))))
+            (error (concat "Replacement OLD text does not match at [%d,%d), tick %d; "
+                           "actual=%s%s. Reread with emacs-agent-read-lines or "
+                           "emacs-agent-read-around before retrying; do not guess offsets")
+                   start end (buffer-chars-modified-tick) actual
+                   (if (< preview-end end)
+                       (format " [truncated: %d of %d characters]"
+                               (- preview-end start) (- end start))
+                     ""))))
+        (let ((changed (not (equal old new))) result)
+          (unwind-protect
+              (progn
+                (when changed (undo-boundary))
+                (atomic-change-group
+                  (let ((handle (prepare-change-group)))
+                    (when changed
+                      (goto-char start)
+                      (delete-region start end)
+                      (insert (substring-no-properties new)))
+                    (setq result
+                          (list :buffer (buffer-name) :start start
+                                :end (+ start (length new))
+                                :tick (buffer-chars-modified-tick)
+                                :modified (buffer-modified-p) :changed changed))
+                    (unless (emacs-agent-helpers--fit result)
+                      (error "eval output limit too small for helper metadata"))
+                    ;; Hooks may insert boundaries; keep this replacement one step.
+                    (undo-amalgamate-change-group handle))))
+            (when changed (undo-boundary)))
+          result)))))
 
 (provide 'emacs-agent-helpers)
 ;;; emacs-agent-helpers.el ends here

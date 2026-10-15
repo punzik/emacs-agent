@@ -131,6 +131,45 @@ Wrapping the result or printing extra output can still trigger the evaluator's
 general truncation. Full tool-output artifacts are deferred to F3.
 See [ADR-0001](docs/adr/0001-f0-buffer-helpers.md) for the contract.
 
+### Editing live buffers with undo
+
+Prefer `(emacs-agent-replace-region BUFFER START END OLD NEW :tick TICK)`
+through `eval_elisp`. Positions are absolute characters, END exclusive. Supply
+exact OLD text and the modification tick from a fresh read. Empty OLD with
+START=END inserts; empty NEW deletes. `:widen t` explicitly permits editing
+outside narrowing. Dead buffers, stale text/tick, read-only buffers, disabled
+undo and external visited-file changes fail rather than being overridden.
+
+String indices (`substring`, `aref`, `string-match`) start at 0, unlike buffer
+positions. Index I in text captured from position BASE maps to BASE+I; for
+`buffer-string`, BASE is `point-min` at capture, not necessarily 1 when narrowed.
+Prefer positions from reading helpers. On OLD mismatch or stale tick, reread
+and recompute the range/text/tick; do not guess offsets or bypass the rejection
+with direct edits. Mismatch errors include range, tick and an escaped preview
+of up to 160 actual characters, explicitly marked if truncated. This is only
+diagnostic text, not permission to apply a replacement. The evaluator may
+further truncate errors under a small output limit.
+
+A replacement is atomic and one undo step, separate from existing user undo.
+Normal change hooks run; hook errors roll back the target buffer's text, not
+arbitrary external side effects. Point/mark and narrowing track the edit as
+Emacs markers. The small result reports `:buffer`, `:start`, exclusive new
+`:end`, `:tick`, `:modified` and `:changed`. Identical text is a no-op.
+
+The helper does not save. When saving is intended, use
+`(with-current-buffer BUFFER (save-buffer))`. This saves the whole buffer,
+including pre-existing user modifications, and keeps undo, file timestamps,
+backups and save hooks working normally. A save failure leaves the buffer edit
+available for inspection and undo. Do not fake saving with
+`set-buffer-modified-p nil`: three-argument `write-region` does not update the
+visited-file timestamp and can cause a spurious reload warning. Do not use
+shell writes or `revert-buffer` as routine synchronization for visited files.
+
+The model receives these guidelines in its system prompt; unrestricted eval
+can still bypass them. Undo is subject to normal Emacs size limits and buffer
+lifetime, not persisted across restarts. See
+[ADR-0002](docs/adr/0002-buffer-native-editing.md).
+
 ### Replay support boundary
 
 Currently supported: trusted **OpenAI Chat Completions** configurations using
@@ -225,7 +264,7 @@ normal minibuffer hooks/keymaps; the agent does not supply a custom editor.
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 69 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 83 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh
