@@ -1,8 +1,9 @@
 # Emacs Agent после MVP: выводы из Pi/Pigo и план развития
 
-**Статус:** результаты исследования и план; F0 реализован и проверен offline
-(83 ERT с дополнением буферного редактирования, byte compilation с warnings-as-errors). Opt-in live smoke F0 ещё не
-выполнялся. Остальные post-MVP этапы не реализованы.
+**Статус:** F0 и F0b реализованы; 95 offline ERT и byte compilation с
+warnings-as-errors проходят. Для буферного редактирования F0 есть пользовательский
+live smoke и подтверждение undo; отдельный live smoke F0b ещё не выполнялся.
+Остальные post-MVP этапы не реализованы.
 
 **Основание:** обсуждение после завершения MVP, этапов 0–5.
 
@@ -317,6 +318,16 @@ Opt-in live smoke: модель читает строку/символ у captur
 
 ### F0b — Lossless уплотнение streaming-журнала при сохранении
 
+**Реализовано и проверено offline:** schema 2, snapshot-only агрегация,
+pretty-print и сохранение partial checkpoints. Контракт и исследование Pi/Pigo:
+[ADR-0003](adr/0003-durable-streaming-blocks.md). Миграции нет; для нового теста
+выбрать отдельный приватный `emacs-agent-data-directory`, старые архивы не
+изменять. Live events/renderer/gptel/model history не менялись. Синтетический
+fixture без model messages: 4002 события → 4, примерно 460 КБ → 11 КБ (~42×).
+95 ERT проходят, включая фактическое сравнение dry-run wire JSON до/после
+restore, renderer/fold boundaries и свежий batch Emacs. Live smoke F0b ещё
+не запускался; F1 — следующий этап.
+
 **Согласованное требование:** объединить мелкие streaming-записи в постоянном
 архиве, если доказано, что это не ухудшает сохранение, восстановление и model
 replay. Это не LLM-compaction F4: нет summary, потери текста или новых запросов
@@ -330,8 +341,10 @@ replay. Это не LLM-compaction F4: нет summary, потери текста
 **Работа:**
 
 1. Согласовать durable block format, идентификаторы, start/end timestamps,
-   partial/completed markers и schema migration. Не хранить массив всех
-   token IDs только ради воспроизведения ненужной детализации доставки.
+   partial/completed markers. По решению пользователя обратная совместимость,
+   schema migration и backup старой схемы не нужны на стадии глубокой альфы.
+   Не хранить массив всех token IDs только ради воспроизведения ненужной
+   детализации доставки.
 2. Сохранить incremental streaming в UI. Начать с преобразования копии данных
    для snapshot: не менять live event list, cursor renderer, accumulated chunks
    или обработчики gptel. In-memory оптимизация — не обязательная часть этапа.
@@ -348,9 +361,10 @@ replay. Это не LLM-compaction F4: нет summary, потери текста
 6. Model messages, tool-call IDs, results и protocol/reasoning fields не менять
    ради уплотнения UI-events. Восстановленный журнал не является источником
    model history; сохранённые model records остаются независимыми.
-7. Поддержать чтение старых per-delta snapshots и явную проверяемую миграцию
-   с backup. Сохранить atomic rename, permissions, corruption isolation,
-   отсутствие повторного выполнения и правило interrupted runs.
+7. Старые per-delta snapshots явно отклонять как неподдерживаемую схему,
+   без миграции и compatibility reader. Не удалять пользовательские архивы.
+   Сохранить atomic rename, permissions, corruption isolation, отсутствие
+   повторного выполнения и правило interrupted runs.
 8. По возможности сделать новое data-only представление удобнее для чтения
    (например, pretty-print), не подменяя этим реальное сокращение записей.
 
@@ -358,10 +372,10 @@ replay. Это не LLM-compaction F4: нет summary, потери текста
 save/restore, включая interleaved reasoning/assistant, пустые chunks, несколько
 HTTP-ответов, tools/statuses между блоками и разные run. Проверяются checkpoints
 посреди stream, продолжение после checkpoint без повторов, cancel/error,
-повторное сохранение/идемпотентность преобразования и old-schema migration.
+повторное сохранение/идемпотентность преобразования и явный отказ старой схемы.
 Фактический dry-run wire replay сохраняет исходные tool pairs и protocol поля.
-Restart не возобновляет actions; failed migration/write оставляет старый файл
-целым. Synthetic fixtures позволяют сравнить число записей/байты; частный
+Restart не возобновляет actions; failed write оставляет прежний файл целым.
+Synthetic fixtures позволяют сравнить число записей/байты; частный
 пользовательский лог не включается в тесты/репозиторий. Этап принимается только
 после этих проверок: уменьшение файла не оправдывает потерю данных восстановления.
 
@@ -585,7 +599,7 @@ late callbacks и независимость старой ветви; UI явн�
 | Когда | Вопрос | Предлагаемая отправная точка |
 |---|---|---|
 | F0 | Helpers: сигнатуры, структурированный результат, narrowing и EOF | Принято: [ADR-0001](adr/0001-f0-buffer-helpers.md); абсолютные координаты, явный widening, terminal empty line, plist с продолжением |
-| F0b | Durable blocks, partial markers, identifiers/timestamps и migration | Lossless snapshot-only преобразование; live renderer/model history не менять, старые файлы сохранять до успешной миграции |
+| F0b | Durable blocks, partial markers, identifiers/timestamps | Принято: [ADR-0003](adr/0003-durable-streaming-blocks.md); schema 2, snapshot-only, partial checkpoints, без миграции/обратной совместимости |
 | F1 | Собственные roots или чтение `.pi`/`.pigo`? | Настраиваемые roots агента; существующие ресурсы подключать явно, не смешивать автоматически |
 | F1 | Читать инструкции всех filesystem ancestors или только scope? | Global + project root → directory source buffer; для global и TRAMP согласовать отдельно |
 | F1 | Template syntax и история ввода | Один формат, например именованные `{{name}}`; явно показывать expansion/provenance, не auto-detect несколько диалектов |
@@ -619,13 +633,14 @@ loading. Любые новые пользовательские настройк
    для границ истории, corruption и transition sequences.
 5. Opt-in real-provider smoke отдельно документируется; mock/dry-run не равен
    реальному HTTP. Секреты и пользовательские settings не копировать в fixtures.
-6. Изменения durable schema требуют fixtures migration/roundtrip, ясной политики
-   несовместимости и сохранения старых файлов при failed writes.
+6. Изменения durable schema требуют roundtrip fixtures, ясной политики
+   несовместимости и сохранения прежнего файла при failed writes. На текущей
+   стадии глубокой альфы миграция/обратная совместимость не требуются по решению
+   пользователя; прежние предложения migration для будущих этапов пересмотреть
+   перед их реализацией.
 7. После каждого этапа обновить README/интеграционные ограничения, зафиксировать
    проверенные факты и оставшиеся вопросы. Коммит — только по запросу пользователя.
 
-**Рекомендуемый следующий шаг:** при желании выполнить opt-in live smoke F0.
-Затем согласовать durable block format и миграцию F0b, реализовать уплотнение
-с доказанным lossless save/restore. Затем согласовать три решения F1
-(roots, hierarchy, template syntax) и перейти к instructions, после них —
-templates. Большая перестройка ядра для этого не требуется.
+**Рекомендуемый следующий шаг:** при желании выполнить opt-in live smoke F0b
+в отдельном приватном data directory. Затем согласовать три решения F1
+(roots, hierarchy, template syntax) и перейти к instructions, после них — templates. Большая перестройка ядра для этого не требуется.

@@ -355,7 +355,50 @@ policy, transform/truncation isolation, unsupported backend preflight, opaque
 field poisoning, nested signatures and streaming batch order. Other providers
 are deliberately rejected, not claimed to have been integration-tested.
 
-## Stage 5 persistence and restart validation
+## Post-MVP F0b: durable streaming blocks (schema 2)
+
+The current store writes **schema 2**, pretty-printed Lisp data. Schema 1 is
+rejected; no migration or compatibility reader is provided during deep alpha.
+Use a new private `emacs-agent-data-directory` for testing without touching old
+archives. The stage-5 schema-1 observations below are historical, not a claim
+that old snapshots can be loaded by current code.
+
+Only a validated deep snapshot copy of `:events` is compacted. Adjacent string
+assistant/reasoning events of the same session/run/type become one block with
+literal concatenated payload, first ID/time, last ID/time and partial/complete
+state. End/tool/status/type/run/unknown-metadata boundaries remain distinct.
+`complete` requires an immediately following matching end marker; it denotes
+an accumulator flush, including cancel/error, not success. Interleaved earlier
+segments remain conservatively partial. Per-token IDs/times between block
+endpoints are intentionally discarded, not retained in a hidden array.
+
+Live event conses, renderer cursor, gptel callbacks and accumulated chunks are
+unchanged. Canonical `:messages`, tool IDs/results and protocol reasoning
+remain independent. Checkpoint copies of unfinished assistant text are retained
+without flushing live state. Restart renders blocks directly and bumps IDs
+using `:last-id` too; active/pending runs still become interrupted, never resume.
+Atomic rename/permissions, corruption isolation and the five-second stream
+checkpoint cadence remain in place. No append-only/tree refactor was added.
+
+Validation: **95 offline ERT tests** and byte compilation with warnings-as-errors
+pass via `nix-shell -p gnumake --run 'make clean test compile'`. Tests compare
+actual rendered text/fold bounds, interleaving/empty chunks/boundaries, repeated
+checkpoints followed by continuation without duplicates, cancel/error,
+restored blocks plus new deltas, ID bumping, malformed blocks, schema-1 refusal,
+write/rename failure cleanup and independent fresh-process restore without
+loading gptel. Actual pinned-gptel dry-run wire JSON is identical before/after
+restore for all context policies, including original tool pairs and protocol
+reasoning; final-answer reasoning remains in the journal even when absent from
+model messages. Synthetic size fixture: 4,002 events -> 4, approximately
+460 KB -> 11 KB (~42x); this fixture has no canonical model messages, so it is
+not a forecast for arbitrary user archives. Live memory and full-history scan
+cost remain. No real-provider F0b smoke has been run. Optional smoke in a new
+private store: stream a reply, checkpoint mid-stream, finish/save, restart,
+check the journal and continue with one turn. Do not edit old private logs.
+
+Contract and local Pi/Pigo research: [ADR-0003](adr/0003-durable-streaming-blocks.md).
+
+## Stage 5 persistence and restart validation (historical schema 1)
 
 `emacs-agent-store.el` stores one versioned Lisp-data snapshot per canonical
 session, below `emacs-agent-data-directory` (default under the user's Emacs
@@ -364,7 +407,9 @@ adapter contract, session identity/root, events/messages, timestamps, source
 name/file and durable run audit fields. Backend name/model and agent request
 settings are recorded; backend credential objects, HTTP handles, functions,
 buffers/windows/markers/processes are never serialized. Data is read, never
-loaded/evaluated as code; unsupported schema/adapter files require migration.
+loaded/evaluated as code. This stage originally required explicit migration
+for unsupported schema/adapter files; current deep-alpha schema 2 deliberately
+provides no migration or compatibility reader (see F0b above).
 
 Writes use a same-directory 0600 temporary file and rename; newly created
 storage directories are 0700. Serialization rejects live objects, closures,

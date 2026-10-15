@@ -213,6 +213,10 @@ transport if it died; windows and captured point/region are not restored.
 versioned `.eld` data file: `global.eld` or a canonical-root hash. Files are
 read as Lisp **data**, never loaded/evaluated as code. Writes use a same-directory
 temporary file and atomic rename (new directory 0700, snapshot files 0600).
+Current format is **schema 2**; deep-alpha schema 1 is unsupported and no
+migration is provided. For a fresh test, choose a new private
+`emacs-agent-data-directory` before asking/loading sessions; existing archives
+are not automatically deleted or converted.
 No encryption is provided. If your Emacs directory is tracked in dotfiles,
 ignore this subdirectory or configure an untracked/private location.
 
@@ -223,6 +227,26 @@ Streaming deltas are checkpointed at most every five seconds. Explicit
 partial text, without flushing/changing its live run. A renderer failure
 cannot suppress autosave; an autosave failure is reported but does not retry
 or terminate the model/tool loop. Persistence writes are synchronous I/O.
+
+F0b stores adjacent assistant/reasoning fragments as compact blocks in a
+**snapshot copy** only. Live events, incremental UI cursors and stream
+accumulators are unchanged; canonical model messages/protocol fields stay
+independent. Block text is concatenated literally, without crossing type/run,
+end/tool/status or unknown-metadata boundaries. Each block retains first
+`:id`/`:time`, `:last-id`/`:last-time` and `:state`. `complete` means an immediately
+following matching `*-end`, not a successful HTTP response: a flush on error
+or cancel also closes assistant text. Otherwise the block is conservatively
+`partial`, including earlier interleaved segments. Intermediate per-delta IDs
+and delivery times are intentionally not retained. Reasoning remains stored
+regardless of display policy. Restored blocks render directly, not as recreated
+token events, and new events can still be appended normally.
+
+Snapshots are pretty-printed Lisp data (newlines inside strings stay escaped).
+Synthetic fixture: 4,002 events become 4; a roughly 460 KB schema-1-style
+snapshot becomes 11 KB, about 42x smaller. This fixture has no model messages;
+real savings depend on the session's text/tools/history. Saving still copies
+and traverses the full live history; F0b does not promise lower UI memory use
+or a constant-time checkpoint. See [ADR-0003](docs/adr/0003-durable-streaming-blocks.md).
 
 `M-x emacs-agent-session-list` loads independent snapshots and shows sessions;
 `RET` opens a read-only journal, `g` refreshes. Asking/showing from a project
@@ -244,9 +268,10 @@ automatically opened; no buffer/window/process/marker/closure/backend credential
 object or HTTP handle is restored.
 
 A corrupt/unsupported file does not prevent other sessions from loading.
-Direct access to its session fails with its path and migration/archive advice;
-it is not silently replaced with an empty session. New schema/adapter versions
-require an explicit migration. Snapshots are plaintext and can contain secrets
+Direct access to its session fails with its path and an explicit error;
+it is not silently replaced with an empty session. Unsupported schema/adapter
+versions require a separate data directory or manually archiving the file;
+there is no compatibility reader or migration command. Snapshots are plaintext and can contain secrets
 from prompts, reasoning and tool results; do not publish them. Concurrent
 writers from multiple Emacs processes are not supported (last rename wins).
 Transport-buffer reclamation is still not automatic.
@@ -264,7 +289,7 @@ normal minibuffer hooks/keymaps; the agent does not supply a custom editor.
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 83 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 95 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh

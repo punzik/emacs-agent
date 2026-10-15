@@ -6,6 +6,7 @@
 
 ;;; Code:
 (require 'emacs-agent-session)
+(require 'pp)
 
 (defcustom emacs-agent-data-directory (expand-file-name "emacs-agent/" user-emacs-directory)
   "Directory for session snapshots, outside working projects by default.
@@ -18,7 +19,7 @@ Streaming deltas are checkpointed at most once per five seconds; terminal
 states and tool boundaries are always saved immediately."
   :type 'boolean :group 'emacs-agent)
 
-(defconst emacs-agent-store--schema 1)
+(defconst emacs-agent-store--schema 2)
 (defconst emacs-agent-store--adapter "chat-completions-v1")
 (defvar emacs-agent-store--last-save (make-hash-table :test #'eq))
 
@@ -69,6 +70,56 @@ Reject cycles/closures instead of hanging or printing unreadable #<...> data."
         :stream (emacs-agent-run-stream run) :tool-count (emacs-agent-run-tool-count run)
         :tool-budget (emacs-agent-run-tool-budget run)))
 
+(defun emacs-agent-store--text-event-p (event)
+  "Whether EVENT is a string-valued assistant or reasoning fragment/block."
+  (and (memq (plist-get event :type) '(assistant reasoning))
+       (stringp (plist-get event :payload))))
+
+(defun emacs-agent-store--plain-text-p (event)
+  "Whether EVENT can be merged without discarding unknown metadata."
+  (and (emacs-agent-store--text-event-p event)
+       (cl-loop for key in event by #'cddr
+                always (memq key '(:id :time :session-id :run-id :type :payload
+                                  :last-id :last-time :state)))))
+
+(defun emacs-agent-store--complete-p (event next)
+  "Whether NEXT explicitly closes the text type of EVENT in the same run.
+This is an accumulator boundary, not successful completion of an HTTP/run."
+  (and (eq (plist-get next :type)
+           (pcase (plist-get event :type)
+             ('assistant 'assistant-end) ('reasoning 'reasoning-end)))
+       (equal (plist-get event :session-id) (plist-get next :session-id))
+       (equal (plist-get event :run-id) (plist-get next :run-id))))
+
+(defun emacs-agent-store--compact-events (events)
+  "Return durable blocks for validated EVENTS without mutating the input.
+Only adjacent known string fragments of the same session/run/type merge.
+Concatenate each block once, avoiding quadratic string accumulation."
+  (let (result)
+    (while events
+      (let ((event (car events)))
+        (setq events (cdr events))
+        (if (not (emacs-agent-store--text-event-p event))
+            (push event result)
+          (let ((block (copy-sequence event))
+                (mergeable (emacs-agent-store--plain-text-p event))
+                (last event) (chunks (list (plist-get event :payload))))
+            (while (and mergeable events
+                        (emacs-agent-store--plain-text-p (car events))
+                        (eq (plist-get event :type) (plist-get (car events) :type))
+                        (equal (plist-get event :session-id) (plist-get (car events) :session-id))
+                        (equal (plist-get event :run-id) (plist-get (car events) :run-id)))
+              (setq last (car events) events (cdr events))
+              (push (plist-get last :payload) chunks))
+            (setq block (plist-put block :payload (mapconcat #'identity (nreverse chunks) ""))
+                  block (plist-put block :last-id (or (plist-get last :last-id) (plist-get last :id)))
+                  block (plist-put block :last-time (or (plist-get last :last-time) (plist-get last :time)))
+                  block (plist-put block :state
+                                   (if (emacs-agent-store--complete-p block (car events))
+                                       'complete 'partial)))
+            (push block result)))))
+    (nreverse result)))
+
 (defun emacs-agent-store--snapshot (session)
   "Build a pure snapshot of SESSION without changing its live state."
   (unless (emacs-agent-store--identity-p (emacs-agent-session-key session)
@@ -90,14 +141,19 @@ Reject cycles/closures instead of hanging or printing unreadable #<...> data."
                     (list (list :role 'assistant :run-id (emacs-agent-run-id active)
                                 :text (mapconcat #'identity
                                                  (reverse (emacs-agent-run-assistant-chunks active)) ""))))))
-    (emacs-agent-store--data
-     (list :schema emacs-agent-store--schema :adapter emacs-agent-store--adapter
-           :id (emacs-agent-session-id session) :key (emacs-agent-session-key session)
-           :project-root (emacs-agent-session-project-root session)
-           :updated-at (emacs-agent-session-updated-at session)
-           :source (emacs-agent-store--source (emacs-agent-session-last-source-buffer session))
-           :messages messages :events (emacs-agent-session-events session)
-           :runs (mapcar #'emacs-agent-store--run runs)))))
+    (let ((data (emacs-agent-store--data
+                 (list :schema emacs-agent-store--schema :adapter emacs-agent-store--adapter
+                       :id (emacs-agent-session-id session) :key (emacs-agent-session-key session)
+                       :project-root (emacs-agent-session-project-root session)
+                       :updated-at (emacs-agent-session-updated-at session)
+                       :source (emacs-agent-store--source (emacs-agent-session-last-source-buffer session))
+                       :messages messages :events (emacs-agent-session-events session)
+                       :runs (mapcar #'emacs-agent-store--run runs)))))
+      ;; Validate every original identity/field before aggregation can hide it.
+      (emacs-agent-store--validate data
+                                   (emacs-agent-store--file (emacs-agent-session-key session)) t)
+      (plist-put data :events (emacs-agent-store--compact-events (plist-get data :events)))
+      data)))
 
 (defun emacs-agent-store-save (session)
   "Atomically save SESSION, returning its path; leave old data intact on error."
@@ -116,8 +172,7 @@ Reject cycles/closures instead of hanging or printing unreadable #<...> data."
             (let ((print-length nil) (print-level nil) (print-circle nil)
                   (print-escape-newlines t) (coding-system-for-write 'utf-8-unix))
               (insert ";; Emacs Agent session data; contains potentially sensitive history.\n")
-              (prin1 data (current-buffer))
-              (insert "\n")
+              (pp data (current-buffer))
               (write-region (point-min) (point-max) temporary nil 'silent)))
           (rename-file temporary file t)
           (puthash session (float-time) emacs-agent-store--last-save)
@@ -134,16 +189,18 @@ Reject cycles/closures instead of hanging or printing unreadable #<...> data."
                (error "Malformed session fields"))
              (push key keys))))
 
-(defun emacs-agent-store--validate (data file)
-  "Check DATA schema and identity for FILE before modifying the registry."
+(defun emacs-agent-store--validate (data file &optional live-events)
+  "Check DATA schema and identity for FILE before modifying the registry.
+LIVE-EVENTS allows raw deltas and not-yet-recomputed block states in a copied
+live list.  Durable snapshots require complete, consistent block metadata."
   (emacs-agent-store--plist data)
   (cl-loop for key in data by #'cddr do
            (unless (memq key '(:schema :adapter :id :key :project-root :updated-at :source :messages :events :runs))
-             (error "Unknown snapshot field; migration is required")))
+             (error "Unknown snapshot field")))
   (unless (eql (plist-get data :schema) emacs-agent-store--schema)
-    (error "Unsupported session schema; migrate the file or use another data directory"))
+    (error "Unsupported session schema; no migration is provided, use a new data directory"))
   (unless (equal (plist-get data :adapter) emacs-agent-store--adapter)
-    (error "Unsupported replay adapter; migration is required"))
+    (error "Unsupported replay adapter"))
   (unless (and (stringp (plist-get data :id))
                (numberp (plist-get data :updated-at))
                (emacs-agent-store--identity-p (plist-get data :key) (plist-get data :project-root))
@@ -156,12 +213,24 @@ Reject cycles/closures instead of hanging or printing unreadable #<...> data."
     (unless (and (memq (plist-get message :role) '(user assistant tool unsupported-protocol))
                  (stringp (plist-get message :run-id)))
       (error "Malformed history identity")))
-  (dolist (event (plist-get data :events))
+  (cl-loop for tail on (plist-get data :events) for event = (car tail) do
     (emacs-agent-store--plist event)
     (unless (and (stringp (plist-get event :id)) (stringp (plist-get event :run-id))
                  (equal (plist-get event :session-id) (plist-get data :id))
                  (numberp (plist-get event :time)) (symbolp (plist-get event :type)))
-      (error "Malformed event identity")))
+      (error "Malformed event identity"))
+    (when (and (emacs-agent-store--text-event-p event)
+               (or (not live-events)
+                   (cl-some (lambda (key) (plist-member event key))
+                            '(:last-id :last-time :state))))
+      (unless (and (stringp (plist-get event :last-id))
+                   (numberp (plist-get event :last-time))
+                   (memq (plist-get event :state) '(partial complete))
+                   (or live-events
+                       (eq (plist-get event :state)
+                           (if (emacs-agent-store--complete-p event (cadr tail))
+                               'complete 'partial))))
+        (error "Malformed streaming block"))))
   (dolist (run (plist-get data :runs))
     (emacs-agent-store--plist run)
     (unless (and (stringp (plist-get run :id)) (stringp (plist-get run :user-text))
@@ -199,6 +268,7 @@ Reject cycles/closures instead of hanging or printing unreadable #<...> data."
           (emacs-agent-store--bump-id (emacs-agent-session-id session))
           (dolist (event (emacs-agent-session-events session))
             (emacs-agent-store--bump-id (plist-get event :id))
+            (emacs-agent-store--bump-id (plist-get event :last-id))
             (emacs-agent-store--bump-id (plist-get event :run-id)))
           (dolist (message (emacs-agent-session-messages session))
             (emacs-agent-store--bump-id (plist-get message :run-id)))
