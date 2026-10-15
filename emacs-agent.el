@@ -11,6 +11,7 @@
 ;;; Code:
 (require 'emacs-agent-session)
 (require 'emacs-agent-context)
+(require 'emacs-agent-helpers)
 (require 'emacs-agent-log)
 (require 'emacs-agent-store)
 (require 'tabulated-list)
@@ -32,7 +33,7 @@
   "Multiline prompt map: RET sends, C-j inserts newline, C-g aborts.")
 
 (defconst emacs-agent-system-prompt
-  "You are an agent inside a shared live Emacs. Your only tool is eval_elisp, which executes arbitrary Lisp without sandbox or approval. Discover functions using documentation and symbol-function, variables using boundp and symbol-value, buffers using buffer-list, projects using project.el. You may call shell functions and create asynchronous processes. Project sessions separate conversation history, not access. Editor context is diagnostic user-level data captured before prompt entry and may be stale. Tools default to the run's original working buffer if alive, otherwise its session/transport buffer, never necessarily the selected window. Use with-current-buffer explicitly. Buffers may be narrowed; widen when necessary. Buffer text is not automatically included: read the needed ranges. Never invent tool results."
+  "You are an agent inside a shared live Emacs. Your only tool is eval_elisp, which executes arbitrary Lisp without sandbox or approval. Discover functions using documentation and symbol-function, variables using boundp and symbol-value, buffers using buffer-list, projects using project.el. You may call shell functions and create asynchronous processes. Project sessions separate conversation history, not access. Editor context is diagnostic user-level data captured before prompt entry and may be stale. Tools default to the run's original working buffer if alive, otherwise its session/transport buffer, never necessarily the selected window. Use with-current-buffer explicitly. Buffers may be narrowed; widen when necessary. Buffer text is not automatically included: read the needed ranges. Prefer (emacs-agent-read-lines BUFFER START END :widen t) for inclusive absolute lines, (emacs-agent-read-around BUFFER POSITION :before 2 :after 2 :widen t) for a captured point, and (emacs-agent-buffer-info BUFFER) for current metadata. BUFFER must be an explicit live buffer or its exact name. Helpers preserve editor state; :widen t is optional explicit permission to read outside narrowing. Lines are 1-based, columns 0-based display columns, positions character positions. Empty lines count; line-beginning-position and line-end-position take relative arguments, NOT absolute line numbers. Inspect helper docstrings for result keys and options. For truncated reads, repeat read-lines with the same range and :from NEXT-POSITION :tick TICK from the result; a stale tick is an error, not proof of why text changed. Use a helper as the sole final form without stdout to preserve its metadata within eval-output-limit. Helpers do not make captured coordinates live markers. Never invent tool results."
   "Stable instruction for the gptel adapter.")
 
 ;;;###autoload

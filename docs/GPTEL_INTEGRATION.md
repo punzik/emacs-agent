@@ -1,5 +1,29 @@
 # gptel integration — stage 0
 
+## Post-MVP F0: live buffer helpers
+
+`emacs-agent` now loads `emacs-agent-helpers.el`: ordinary Lisp functions for
+absolute line ranges, explicit-position context and buffer metadata. They are
+called through the existing `eval_elisp`; no changes to gptel tool dispatch,
+transport, replay, settings or hooks were needed. An adapter test checks that
+exactly one tool is selected and that a real helper reads the source buffer
+through a mocked provider call. Existing real-gptel dry-run tests still pass.
+
+The helper budgets its printed plist and evaluator prefix together, shrinking
+text while retaining continuation metadata. This assumes it is the sole final
+form with no stdout; the generic evaluator is unchanged. Impossible metadata
+budgets signal errors. Full output artifacts remain F3.
+
+Validation: 69 offline ERT tests pass; warning-as-error byte compilation passes
+on the baseline below, via `nix-shell -p gnumake --run 'make clean test compile'`.
+F0 real-provider smoke has **not** been run. Optional smoke: use a disposable
+buffer with leading/consecutive empty lines, capture a point at a symbol, ask
+the model to read that symbol and absolute line 14 with helpers. Check actual
+tool results and retained empty lines, not just the final prose. Do not let
+this opt-in test modify real project files.
+
+Contract: [ADR-0001](adr/0001-f0-buffer-helpers.md).
+
 ## Tested baseline
 
 Inspected the actual installed source, not examples from a different release:

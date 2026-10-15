@@ -14,6 +14,8 @@ Turns are FIFO within a session; different sessions can request concurrently.
   [docs/GPTEL_INTEGRATION.md](docs/GPTEL_INTEGRATION.md)
 - Prototype: `examples/emacs-agent-spike.el`
 - Reusable evaluator: `emacs-agent-eval.el`
+- Accepted architectural decisions: [docs/adr](docs/adr)
+- Live buffer reading helpers (F0): `emacs-agent-helpers.el`
 
 No global keybindings or user gptel configuration are changed. The adapter
 uses the pinned gptel revision documented below. A separate shell tool remains
@@ -92,6 +94,42 @@ submission, so queued runs and their tool continuations cannot switch modes
 mid-turn. Filtering never mutates stored snapshots or history records.
 Ambient gptel prompt transforms and chat UI history truncation are disabled
 for the private transport only; user's gptel settings/hooks are unchanged.
+
+### Reading live buffers (F0)
+
+Loading `emacs-agent` also loads three ordinary Lisp helpers, usable through
+`eval_elisp` without adding any model tools:
+
+```elisp
+(emacs-agent-buffer-info "example.el")
+(emacs-agent-read-lines "example.el" 14 20 :widen t)
+(emacs-agent-read-around "example.el" 367 :before 2 :after 2 :widen t)
+```
+
+Use an explicit live buffer or its exact name. Helpers read unsaved text and
+preserve point, mark, restrictions and windows. Lines are absolute, 1-based;
+columns are 0-based display columns (tabs expanded), positions are character
+positions. Empty lines count, including the last empty line after a newline.
+`line-beginning-position` takes a **relative** argument, not an absolute line.
+Without explicit `:widen t`, inaccessible or partially inaccessible lines are
+rejected, not silently clipped. Invalid ranges/positions and dead buffers fail.
+
+Results are plists with buffer metadata and `:lines` rows containing `:line`,
+`:start`, exclusive `:end`, full `:line-end`, and `:text` without newline.
+Around adds `:at` with coordinates and symbol at the supplied position.
+`:limit` defaults to 4096 text characters; printed-output budgeting can reduce
+it further. On `:truncated t`, resume with the same line range and
+`:from NEXT-POSITION :tick TICK` from the result. Supplying an old modification
+tick fails after a text edit. Without an expected tick, a still-in-range old
+position cannot be identified as stale. Names can also be reused after a kill;
+these snapshots are not persistent identities or live markers.
+
+Use the helper as the sole final form, without stdout: its printed plist plus
+`=>` prefix is budgeted against `emacs-agent-eval-output-limit`. If metadata
+cannot fit, the helper errors rather than returning an incomplete plist.
+Wrapping the result or printing extra output can still trigger the evaluator's
+general truncation. Full tool-output artifacts are deferred to F3.
+See [ADR-0001](docs/adr/0001-f0-buffer-helpers.md) for the contract.
 
 ### Replay support boundary
 
@@ -187,7 +225,7 @@ normal minibuffer hooks/keymaps; the agent does not supply a custom editor.
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 58 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 69 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh

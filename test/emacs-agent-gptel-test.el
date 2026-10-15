@@ -376,4 +376,21 @@ Mock only the gptel dispatch callback tuples, including their reversed order."
                                          (emacs-agent-session-events (emacs-agent-run-session run)))))))
     (should-not emacs-agent-test--requests)))
 
+(ert-deftest emacs-agent-adapter-helpers-use-single-eval-tool ()
+  (emacs-agent-test-adapter
+    (with-temp-buffer
+      (insert "\n\nlive text\n")
+      (let* ((run (emacs-agent-test--submit "read line 3"))
+             (transport (emacs-agent-run-transport-buffer run)))
+        (with-current-buffer transport
+          (should (= (length gptel-tools) 1))
+          (should (equal (gptel-tool-name (car gptel-tools)) "eval_elisp")))
+        (let* ((delivery (emacs-agent-test--calls
+                          run '(("helper-1" "(emacs-agent-read-lines (current-buffer) 3 3)"))))
+               (wire (cdr (assoc "helper-1" (nth 2 delivery))))
+               (result (read (substring wire 4))))
+          (should (equal (plist-get (car (plist-get result :lines)) :text) "live text"))
+          (should (equal (plist-get result :buffer) (buffer-name)))
+          (should (= (plist-get (car (plist-get result :lines)) :line) 3)))))))
+
 ;;; emacs-agent-gptel-test.el ends here
