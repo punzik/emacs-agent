@@ -132,6 +132,7 @@ Do not select windows, steal focus, or force readers of old entries to scroll."
   (pcase type
     ('queued "Waiting in session FIFO")
     ((or 'usage 'usage-total) (emacs-agent-usage-format payload))
+    ('instructions (emacs-agent-resources-summary payload))
     ('tool-call (format "eval_elisp %s\n%s" (plist-get payload :id)
                         (plist-get (plist-get payload :args) :expression)))
     ('tool-result (format "%s\n%s" (plist-get payload :id) (plist-get payload :result)))

@@ -30,6 +30,7 @@
                       (push (list :prompt prompt :callback (plist-get keys :callback)
                                   :buffer (plist-get keys :buffer)
                                   :stream (plist-get keys :stream)
+                                  :system (plist-get keys :system)
                                   :transforms (plist-get keys :transforms)) emacs-agent-test--requests)
                       'mock-request))
                    ((symbol-function 'gptel-abort) #'ignore))

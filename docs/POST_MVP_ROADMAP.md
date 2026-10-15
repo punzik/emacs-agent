@@ -1,7 +1,7 @@
 # Emacs Agent после MVP: выводы из Pi/Pigo и план развития
 
-**Статус:** F0, F0b и F0c реализованы; следующий этап — согласование F1.
-135 offline ERT и byte compilation с
+**Статус:** F0, F0b, F0c и ограниченный F1 реализованы; следующий этап — F2.
+148 offline ERT и byte compilation с
 warnings-as-errors проходят. Для буферного редактирования F0 есть пользовательский
 live smoke и подтверждение undo; отдельный live smoke F0b ещё не выполнялся.
 Остальные post-MVP этапы не реализованы.
@@ -210,7 +210,7 @@ reasoning не управляет генерацией. Нельзя угады�
 | Проверенные Elisp helpers для чтения и навигации | Устранить наблюдаемые ошибки координат и потерю пустых строк | F0, перед F1 |
 | Lossless уплотнение streaming-записей на диске | Уменьшить архив без ухудшения save/restore и replay | F0b, перед F1 |
 | Компактный model I/O, пакетные правки и usage | Устранить выявленный перерасход контекста и лишние tool rounds | F0c, перед F1 |
-| AGENTS/CLAUDE instructions + prompt templates | Меньше повторяемых указаний; reusable workflows | F1 |
+| AGENTS/CLAUDE instructions из корня проекта | Меньше повторяемых проектных указаний; templates отложены | F1 |
 | Steering, отзыв/редактирование pending input | Управление долгой задачей без cancel/restart | F2 |
 | Полный output artifact + ограниченный preview | Не терять stdout, значение и ошибку | F3 |
 | Context usage + manual/automatic compaction | Длинные разговоры без переполнения | F4 |
@@ -458,32 +458,44 @@ fixtures, не приватные логи. Для live-сравнения — �
 Точный выигрыш в токенах заранее не обещать. Автоматическое summary/truncation
 истории и новый tool не входят в этот этап.
 
-### F1 — Инструкции проекта и шаблоны
+### F1 — Инструкции из корня проекта
+
+**Согласованный scope:** только корень проекта; без global roots, обхода
+родителей и вложенных каталогов. Templates отложены до появления реальных
+повторяющихся сценариев. Решения: [ADR-0005](adr/0005-root-project-instructions.md).
 
 **Работа:**
 
-1. Согласовать корни ресурсов, hierarchy, precedence и template syntax.
-2. Для instruction discovery предлагается приоритет одного файла на каталог:
-   `AGENTS.override.md` → `AGENTS.md` → `AGENTS.MD` → `CLAUDE.md` → `CLAUDE.MD`,
-   как в изученных загрузчиках; подтвердить его вместе с hierarchy.
-   Добавить небольшой загрузчик ресурсов, например `emacs-agent-resources.el`;
-   не разбивать его на множество абстракций до реальной необходимости.
-3. Загружать инструкции из настроенного global root и согласованной иерархии
-   директорий рабочего буфера; фиксировать список/содержимое для конкретного
-   submitted input. Изменения файлов во время run не меняют его молча.
-4. Отделить diagnostic editor snapshot от project instructions. Отключение
-   `context-history` не должно неявно выключать независимо настроенные ресурсы.
+1. **Согласовано и реализовано:** отдельный блок в system prompt текущего run;
+   diagnostic editor snapshot и пользовательский текст не переписываются.
+2. Выбирать один файл в корне проекта по согласованному приоритету:
+   `AGENTS.override.md` → `AGENTS.md` → `AGENTS.MD` → `CLAUDE.md` → `CLAUDE.MD`.
+   Добавить небольшой загрузчик, например `emacs-agent-resources.el`, без
+   преждевременных абстракций под hierarchy/templates.
+3. Фиксировать выбранный путь/содержимое для конкретного submitted input.
+   Изменения файла во время run или ожидания в FIFO не меняют его молча.
+   Сохранить прежний захват source/point до минибуфера.
+4. Отключение `context-history` не должно неявно выключать инструкции.
 5. Дать opt-out и просмотр фактически загруженных путей/предупреждений.
-6. Выбирать template через `completing-read`, раскрывать его до enqueue,
-   сохранять provenance отдельно от текста. В журнале показывать реально
-   отправленный user text, включая явно выбранный template, без скрытых вставок.
-7. Зафиксировать раскрытые inputs для FIFO, не перечитывать их при старте
-   отложенного run. Сохранить прежний захват source/point до минибуфера.
 
-**Готово:** ERT проверяют hierarchy/duplicates/opt-out, отсутствующие и плохие
-файлы, escaping, multiline template arguments, незаполненные переменные,
-исходный буфер и неизменность queued inputs; wire dry-run подтверждает состав
-запроса. Никакой ресурс не выполняет Lisp и не перенастраивает gptel.
+**Реализовано:** `emacs-agent-resources.el`, source buffer-local opt-out,
+снимок при enqueue, инструкции в system prompt, durable instructions event и
+run audit. Journal показывает status/path/warnings; команда
+`emacs-agent-show-instructions` — содержимое active/last-submitted snapshot,
+в том числе после restart. Глобального/hierarchy/template loader нет.
+
+**Проверено:** 148 ERT и warnings-as-errors compilation. Root-only discovery,
+все filename priorities, пустой override, bad/unreadable/broken-link warnings
+без fallback, чтение saved disk вместо unsaved buffer и отсутствие Lisp eval;
+source opt-out после смены буфера в minibuffer, редакторский pre-input context,
+заморозка FIFO и pending restart, read-only view, независимость от context
+policy. Настоящий gptel wire dry-run подтверждает один system block текущего
+snapshot, unchanged user text и отсутствие старых инструкций в model history.
+Continuation dry-run с настоящим TOOL→TRET→WAIT и подменённым HTTP
+подтверждает тот же system block после изменения файла/opt-out. Blank/aborted
+input не читает resources; после restart новый run использует только новый
+snapshot, warnings остаются видимыми в journal/view. Live F1 smoke отдельно
+не запускался.
 
 ### F2 — Steering и редактируемый ожидающий ввод
 
@@ -680,9 +692,9 @@ late callbacks и независимость старой ветви; UI явн�
 | F0 | Helpers: сигнатуры, структурированный результат, narrowing и EOF | Принято: [ADR-0001](adr/0001-f0-buffer-helpers.md); абсолютные координаты, явный widening, terminal empty line, plist с продолжением |
 | F0b | Durable blocks, partial markers, identifiers/timestamps | Принято: [ADR-0003](adr/0003-durable-streaming-blocks.md); schema 2, snapshot-only, partial checkpoints, без миграции/обратной совместимости |
 | F0c | Экономный model I/O, пакетные OLD/NEW edits, usage | [ADR-0004](adr/0004-efficient-model-io.md); plain strings, compact reads, batch edits и gptel-normalized usage реализованы; offline/live checks пройдены |
-| F1 | Собственные roots или чтение `.pi`/`.pigo`? | Настраиваемые roots агента; существующие ресурсы подключать явно, не смешивать автоматически |
-| F1 | Читать инструкции всех filesystem ancestors или только scope? | Global + project root → directory source buffer; для global и TRAMP согласовать отдельно |
-| F1 | Template syntax и история ввода | Один формат, например именованные `{{name}}`; явно показывать expansion/provenance, не auto-detect несколько диалектов |
+| F1 | Roots и instruction discovery | Принято: [ADR-0005](adr/0005-root-project-instructions.md); только project root, один AGENTS/CLAUDE файл по priority, никаких global/parents/children |
+| F1 | Доставка инструкций | Принято: frozen saved-disk snapshot на input; отдельный блок в system prompt текущего run, старые snapshots только audit |
+| F1 | Template syntax и история ввода | Templates отложены пользователем до реальных повторяющихся сценариев |
 | F1/F5 | Когда перечитывать ресурсы? | При подготовке каждого input; queued inputs/run используют frozen snapshot |
 | F2 | Что означает `current` после steering? | Предлагается последний delivered user input; original и steering snapshots остаются в archive; подтвердить изменение семантики |
 | F2 | Последнее сообщение на final boundary | Принятое до закрытия run требует следующую генерацию; после закрытия текст остаётся для явного нового run |
@@ -721,8 +733,8 @@ loading. Любые новые пользовательские настройк
 7. После каждого этапа обновить README/интеграционные ограничения, зафиксировать
    проверенные факты и оставшиеся вопросы. Коммит — только по запросу пользователя.
 
-**Рекомендуемый следующий шаг:** согласовать три решения F1: roots, hierarchy
-и template syntax. F0c реализован и проверен offline/live; отдельный benchmark
-экономии токенов остаётся опциональным и требует одинакового исходника,
-фактической модели/настроек и сопоставимого cache state. Большая перестройка
-ядра для F1 не требуется.
+**Рекомендуемый следующий шаг:** opt-in live smoke ограниченного F1 при
+необходимости, затем offline spike F2 для точки steering в текущем gptel FSM.
+Templates по решению пользователя отложены. Отдельный benchmark экономии
+токенов F0c остаётся опциональным и требует одинакового исходника, фактической
+модели/настроек и сопоставимого cache state.

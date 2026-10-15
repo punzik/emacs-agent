@@ -491,6 +491,45 @@ committed logs. The second mode inherited the first turn's history, so these
 numbers validate accounting only, not comparative mode efficiency or savings
 against Pi. A fresh same-task/model/cache-state benchmark remains optional.
 
+## Post-MVP F1: project-root instructions
+
+Scope was explicitly narrowed: one project-root file, no global/ancestor/child
+search, templates deferred. Priority is `AGENTS.override.md`, `AGENTS.md`,
+`AGENTS.MD`, `CLAUDE.md`, `CLAUDE.MD`. `emacs-agent-resources.el` reads saved
+disk data without visiting files or executing local variables. The first
+existing candidate wins, including empty files. Bad/unreadable selected files
+produce recorded warnings without fallback; missing files/root are normal.
+Normal symlink semantics apply, not a filesystem sandbox.
+
+`emacs-agent-session-enqueue` freezes the snapshot and source opt-out after
+nonempty input, retaining the existing pre-minibuffer editor/root capture.
+The adapter appends that snapshot as a separate block to the run's system
+prompt, independent of context-history. FIFO start does not rediscover files
+or reevaluate opt-out. gptel owns that composed system prompt for all tool
+iterations. Canonical user/tool/assistant history is unchanged; previous
+snapshots are never added to subsequent system prompts.
+
+`instructions` events retain status/root/path/text/warnings and render a compact
+status in the journal; active/pending audit also contains `:instructions`.
+Existing schema 2 serialization restores these records without executable work
+or migration. `emacs-agent-show-instructions` uses the active snapshot, otherwise
+the last submitted event, including after restart. The view is read-only and
+never rereads resources. `emacs-agent-project-instructions` defaults to t and
+can be set buffer-locally to nil in the original source.
+
+148 ERT and warnings-as-errors compilation cover priorities, root-only I/O,
+empty and invalid candidates, opt-out/no-project without I/O, no local eval,
+saved vs unsaved contents, source/view state, submission timing, frozen queued
+snapshots despite file/config changes, interrupted restore and journal/view.
+Actual gptel dry-run confirms the composed system message, unchanged user text,
+no prior snapshot replay, and independence from disabled editor context.
+Real TOOL→TRET→WAIT continuation (only HTTP stubbed) retains the same system
+block despite changed files/opt-out. Additional regressions cover blank/aborted
+input without resource I/O, fresh-only snapshots after restart, and restored
+warning visibility in both journal and view.
+No new real-provider F1 smoke was run; these are offline tests, not live HTTP.
+See [ADR-0005](adr/0005-root-project-instructions.md).
+
 ## Post-MVP F0b: durable streaming blocks (schema 2)
 
 The current store writes **schema 2**, pretty-printed Lisp data. Schema 1 is

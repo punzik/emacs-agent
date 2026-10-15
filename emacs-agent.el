@@ -92,9 +92,10 @@ Separate save, only when intended:
 
 ;;;###autoload
 (defun emacs-agent-ask ()
-  "Capture the working buffer, then read a multiline prompt and queue its turn.
-Capture happens BEFORE entering the minibuffer; editing during prompt input
-never changes that snapshot.  RET sends, C-j inserts a newline, C-g aborts.
+  "Capture editor context, read a multiline prompt and queue its turn.
+Editor capture happens BEFORE the minibuffer; editing during prompt input
+never changes that snapshot.  Saved instructions are captured on submission.
+RET sends, C-j inserts a newline, C-g aborts.
 M-p/M-n recall only user text.  Blank input does nothing.
 From a journal, use its owning session and last live working buffer.
 Starts a gptel run immediately if this session is idle; otherwise queues it."
@@ -115,6 +116,38 @@ Starts a gptel run immediately if this session is idle; otherwise queues it."
         (message "Agent turn %s in %s" (emacs-agent-run-status run)
                  (emacs-agent--session-name session))
         run))))
+
+;;;###autoload
+(defun emacs-agent-show-instructions ()
+  "Show captured project instructions for the active or last submitted run.
+This is a saved disk snapshot, not a live preview.  No resources are reread.
+The view includes the selected path, status and any loading warnings."
+  (interactive)
+  (let* ((session (emacs-agent--current-session))
+         (active (emacs-agent-session-active-run session))
+         (event (unless active
+                  (cl-find-if (lambda (e) (eq (plist-get e :type) 'instructions))
+                              (reverse (emacs-agent-session-events session)))))
+         (snapshot (if active (emacs-agent-run-instructions active) (plist-get event :payload)))
+         (run-id (if active (emacs-agent-run-id active) (plist-get event :run-id))))
+    (unless snapshot (user-error "No submitted instruction snapshot in this session"))
+    (let ((buffer (get-buffer-create
+                   (format "*emacs-agent-instructions: %s*" (emacs-agent--session-name session)))))
+      (with-current-buffer buffer
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (insert (format "Instructions snapshot for %s\nRoot: %S\n%s\n\n"
+                          run-id (plist-get snapshot :root)
+                          (emacs-agent-resources-summary snapshot)))
+          (insert (or (plist-get snapshot :text) ""))
+          (goto-char (point-min)))
+        (special-mode)
+        (setq-local emacs-agent-session--owner session)
+        (setq-local default-directory (or (emacs-agent-session-project-root session)
+                                          default-directory))
+        (set-buffer-modified-p nil))
+      (display-buffer buffer)
+      buffer)))
 
 ;;;###autoload
 (defun emacs-agent-show ()

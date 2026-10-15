@@ -8,6 +8,7 @@
 (require 'project)
 (require 'subr-x)
 (require 'emacs-agent-eval)
+(require 'emacs-agent-resources)
 
 (autoload 'emacs-agent-store-load-session "emacs-agent-store")
 
@@ -20,7 +21,7 @@
   (status 'queued) request-handle transport-buffer backend model stream assistant-chunks
   (tool-count 0) tool-budget pending-tools
   (tool-call-ids (make-hash-table :test #'equal)) context-policy response-protocol
-  usage-requests usage-current)
+  usage-requests usage-current instructions)
 
 (defvar emacs-agent-session--registry (make-hash-table :test #'equal)
   "Session registry keyed by canonical project directory or `global'.")
@@ -72,11 +73,15 @@ This function does not create a session."
 
 (defun emacs-agent-session-enqueue (session text context source window)
   "Queue TEXT and captured CONTEXT in SESSION with SOURCE and WINDOW.
-The adapter consumes the FIFO without recapturing editor context."
+Capture saved project instructions and source opt-out now.  The adapter
+consumes the FIFO without recapturing editor context or instructions."
   (let ((run (make-emacs-agent-run
               :id (format "run-%d" (cl-incf emacs-agent-session--counter))
               :session session :user-text text :editor-context context
-              :source-buffer source :source-window window)))
+              :source-buffer source :source-window window
+              :instructions
+              (with-current-buffer (if (buffer-live-p source) source (current-buffer))
+                (emacs-agent-resources-capture (emacs-agent-session-project-root session))))))
     (setf (emacs-agent-session-last-source-buffer session) source
           (emacs-agent-session-updated-at session) (float-time)
           (emacs-agent-session-pending-runs session)

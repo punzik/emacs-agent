@@ -95,6 +95,31 @@ mid-turn. Filtering never mutates stored snapshots or history records.
 Ambient gptel prompt transforms and chat UI history truncation are disabled
 for the private transport only; user's gptel settings/hooks are unchanged.
 
+### Project instructions (F1)
+
+New inputs read **one saved file from the project root only**, in this order:
+`AGENTS.override.md` → `AGENTS.md` → `AGENTS.MD` → `CLAUDE.md` → `CLAUDE.MD`.
+There is no global/parent/nested-directory discovery and no template support.
+An empty higher-priority file still wins. A selected unreadable/bad file logs
+warnings and contributes no instructions; it does not silently fall back.
+No project or no matching file is normal. Reading follows normal filesystem
+symlinks and is not a sandbox boundary.
+
+Instructions are captured from disk on submission, after prompt entry and
+before enqueue. Unsaved instruction-buffer changes are not used. The source
+buffer/root/editor point are still captured before entering the minibuffer.
+The snapshot is appended to the current run's system prompt, independently of
+`emacs-agent-context-history`; changes to files/settings while waiting in FIFO
+or running do not replace it. Earlier snapshots stay in audit, not API history.
+Instruction files never execute Lisp or configure gptel.
+
+Set `emacs-agent-project-instructions` to nil to opt out for new submissions;
+`setq-local` in a source buffer provides a local opt-out. The journal shows
+status/path/warnings. `M-x emacs-agent-show-instructions` shows the **captured**
+text for the active run, or the last submitted snapshot if idle, without
+rereading disk. Restored snapshots remain inspectable; nothing resumes itself.
+See [ADR-0005](docs/adr/0005-root-project-instructions.md).
+
 ### Model I/O efficiency (F0c)
 
 A string final value from `eval_elisp` is printed without text properties.
@@ -359,7 +384,7 @@ normal minibuffer hooks/keymaps; the agent does not supply a custom editor.
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 135 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 148 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh

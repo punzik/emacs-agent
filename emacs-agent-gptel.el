@@ -454,7 +454,9 @@ Slot access and state names are isolated pinned-gptel contracts."
             (let ((fsm (emacs-agent-gptel--make-fsm run)))
               (setf (emacs-agent-run-request-handle run) fsm)
               (gptel-request (emacs-agent-gptel--history run)
-                :buffer (current-buffer) :stream (emacs-agent-run-stream run) :system emacs-agent-system-prompt
+                :buffer (current-buffer) :stream (emacs-agent-run-stream run)
+                :system (emacs-agent-resources-system emacs-agent-system-prompt
+                                                      (emacs-agent-run-instructions run))
                 :fsm fsm :transforms '(ignore)
                 :callback (apply-partially #'emacs-agent-gptel--callback run)))))
         (quit (emacs-agent-gptel--finish run 'cancelled "Request setup interrupted"))
@@ -474,6 +476,7 @@ Each run has its own transport, callback guard, tool registry and budget."
             (emacs-agent-run-stream run) emacs-agent-stream
             (emacs-agent-run-context-policy run) emacs-agent-context-history)))
   (emacs-agent-session-record run 'queued (emacs-agent-run-user-text run))
+  (emacs-agent-session-record run 'instructions (copy-tree (emacs-agent-run-instructions run)))
   (emacs-agent-gptel--start-next (emacs-agent-run-session run))
   run)
 

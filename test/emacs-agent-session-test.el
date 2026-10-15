@@ -100,10 +100,14 @@
   (emacs-agent-test-with-registry
     (with-temp-buffer
       (cl-letf (((symbol-function 'emacs-agent-session-resolve-root) (lambda () nil))
+                ((symbol-function 'emacs-agent-resources-capture)
+                 (lambda (&rest _) (ert-fail "Blank input read instructions")))
                 ((symbol-function 'read-from-minibuffer) (lambda (&rest _) " \n\t ")))
         (should-not (emacs-agent-ask))
         (should (= (hash-table-count emacs-agent-session--registry) 0)))
       (cl-letf (((symbol-function 'emacs-agent-session-resolve-root) (lambda () nil))
+                ((symbol-function 'emacs-agent-resources-capture)
+                 (lambda (&rest _) (ert-fail "Aborted input read instructions")))
                 ((symbol-function 'read-from-minibuffer) (lambda (&rest _) (signal 'quit nil))))
         (should (eq (condition-case nil (emacs-agent-ask) (quit 'quit)) 'quit))
         (should (= (hash-table-count emacs-agent-session--registry) 0))))))

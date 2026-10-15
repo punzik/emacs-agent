@@ -11,7 +11,9 @@
   (with-current-buffer (emacs-agent-run-transport-buffer run)
     (let ((fsm (funcall emacs-agent-test--real-request
                         (emacs-agent-gptel--history run policy)
-                        :system emacs-agent-system-prompt :dry-run t :stream nil
+                        :system (emacs-agent-resources-system emacs-agent-system-prompt
+                                                              (emacs-agent-run-instructions run))
+                        :dry-run t :stream nil
                         :transforms '(ignore))))
       (emacs-agent-gptel--restore-protocol run fsm)
       (plist-get (gptel-fsm-info fsm) :data))))
