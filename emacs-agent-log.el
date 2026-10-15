@@ -78,6 +78,7 @@ source buffer, journal or model message is modified."
 
 (defun emacs-agent--notify-final (run)
   "Temporarily echo RUN's final assistant answer, never tool-round commentary.
+Skip a duplicate when the selected window shows this session's journal.
 Notification failures cannot strand a completed run or its FIFO."
   (condition-case nil
       (let* ((lines emacs-agent-final-response-lines)
@@ -86,6 +87,8 @@ Notification failures cannot strand a completed run or its FIFO."
              ;; must not redisplay an earlier assistant/tool-round message.
              (last (car (last (emacs-agent-session-messages (emacs-agent-run-session run))))))
         (when (and (natnump lines) (> lines 0) (window-live-p window)
+                   (not (eq (window-buffer (selected-window))
+                            (emacs-agent-session-log-buffer (emacs-agent-run-session run))))
                    (eq (plist-get last :role) 'assistant)
                    (equal (plist-get last :run-id) (emacs-agent-run-id run)))
           (when-let* ((preview (emacs-agent-log--response-preview

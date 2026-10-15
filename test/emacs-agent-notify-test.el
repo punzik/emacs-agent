@@ -133,4 +133,38 @@
           (emacs-agent-test--complete second "second answer"))
         (should (equal (nreverse calls) '("first answer" "second answer")))))))
 
+(ert-deftest emacs-agent-notify-suppresses-only-selected-own-journal ()
+  (dolist (where '(own-journal background-journal other-journal owned-view no-journal))
+    (emacs-agent-test-adapter
+      (with-temp-buffer
+        (let* ((emacs-agent-final-response-lines 3)
+               (source (current-buffer))
+               (run (emacs-agent-test--submit "notification focus"))
+               (session (emacs-agent-run-session run))
+               view calls)
+          (unwind-protect
+              (save-window-excursion
+                (delete-other-windows)
+                (set-window-buffer (selected-window) source)
+                (pcase where
+                  ('own-journal
+                   (set-window-buffer (selected-window) (emacs-agent--log-buffer session)))
+                  ('background-journal
+                   (set-window-buffer (split-window-right) (emacs-agent--log-buffer session)))
+                  ('other-journal
+                   (set-window-buffer (selected-window)
+                                      (emacs-agent--log-buffer
+                                       (emacs-agent-session-get "/tmp/notification-other/"))))
+                  ('owned-view
+                   (setq view (generate-new-buffer " *notification-agent-view*"))
+                   (with-current-buffer view (setq-local emacs-agent-session--owner session))
+                   (set-window-buffer (selected-window) view)))
+                (cl-letf (((symbol-function 'message) (lambda (&rest args) (push args calls))))
+                  ;; Callback current-buffer is SOURCE, not the selected journal.
+                  (emacs-agent-test--complete run "final answer"))
+                (should (= (length calls) (if (eq where 'own-journal) 0 1)))
+                (should (equal (plist-get (car (last (emacs-agent-session-messages session))) :text)
+                               "final answer")))
+            (when (buffer-live-p view) (kill-buffer view))))))))
+
 ;;; emacs-agent-notify-test.el ends here

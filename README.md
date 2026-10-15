@@ -100,7 +100,10 @@ for the private transport only; user's gptel settings/hooks are unchanged.
 Successful completion echoes a short preview without opening a buffer. By
 default it shows the beginning, up to **3 screen lines** including wrapping
 and any `...` marker. The complete answer remains in the journal/history;
-reasoning, tool commentary and failed/cancelled runs do not notify.
+reasoning, tool commentary and failed/cancelled runs do not notify. If the
+selected window already shows that session's journal, the duplicate echo is
+suppressed. A background journal, another session's journal or an instructions
+view does not suppress the notification.
 
 ```elisp
 (setq emacs-agent-final-response-lines 3)   ; 0 disables the message
@@ -400,7 +403,7 @@ normal minibuffer hooks/keymaps; the agent does not supply a custom editor.
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 156 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 157 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh

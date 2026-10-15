@@ -24,18 +24,27 @@ preview smoke в работающем Emacs (без обращения к мод
   интерпретируются. `message-log-max` локально nil: полного дубликата ответа в
   `*Messages*` нет. Window height/resize настройки меняются только динамически
   на время вызова; источник, окна, журнал, API history и snapshots не правятся.
+- По дополнительному запросу пользователя дубликат подавляется, когда
+  selected window показывает journal той же сессии. Проверяется реальное
+  selected window, не current-buffer callback (обычно source/transport).
+  Просто видимый фоновый journal, журнал другой сессии и instructions view
+  не показывают этот final пользователю и не подавляют echo. Настройка
+  не добавляется: это устранение дублирования, а не изменение preview limit.
 - Ошибка echo/display не блокирует завершённый run и следующий input.
 - Полный ответ остаётся в существующем journal/history. Уведомления не
   восстанавливаются и не повторяются при reopen/restore.
 
 ## Проверка
 
-156 ERT и warnings-as-errors compilation прошли. Проверены начало/конец,
+157 ERT и warnings-as-errors compilation прошли. Проверены начало/конец,
 одна строка, Unicode wide/combining characters, tabs и wrapping boundary,
 отсутствие изменений source/window state, временные настройки, `%`, пустой
 final, tool commentary, нулевой opt-out, completed/failed/cancelled, duplicate
 и late callbacks, полная canonical запись и порядок FIFO, включая сломанный
 `message`. Длинные строки проверяются по screen rows, не только числу `\n`.
+Параметризованная регрессия проверяет selected own journal, background journal,
+other journal, agent-owned non-journal view и отсутствие journal; полный final
+в canonical history сохраняется во всех случаях.
 В работающем Emacs показан синтетический четырёхстрочный ответ: current-message
 содержит первые три строки с `...`, echo-area height после redisplay = 3.
 Model/transport contract, persistence schema и порядок этапов F2 не менялись.
