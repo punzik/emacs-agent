@@ -106,9 +106,12 @@ non-string Lisp values and explicit `prin1` output retain their semantics.
 Output limits still apply to the useful text.
 
 Read results now use one literal `:text` plus range metadata, without per-line
-plists. Remaining F0c work is batch exact-text buffer edits and cache-aware
-usage accounting; these are not yet implemented. F0b optimizes
-the disk archive, not the model's history. Findings and contracts:
+plists. Batch exact-text edits are also implemented; cache-aware usage
+accounting remains pending. The system prompt has executable examples for all
+helpers, field extraction, continuation, read→batch and separate saving. Tests
+run the actual examples through the evaluator on disposable visited files;
+local variables do not survive another tool call. F0b optimizes the disk archive,
+not the model's history. Findings and contracts:
 [ADR-0004](docs/adr/0004-efficient-model-io.md). Token savings must be measured
 with the same model/settings and comparable usage/cache metrics.
 
@@ -132,7 +135,12 @@ Without explicit `:widen t`, inaccessible or partially inaccessible lines are
 rejected, not silently clipped. Invalid ranges/positions and dead buffers fail.
 
 Results are plists with buffer metadata once and one literal `:text`, without
-numbering or per-line rows. `:start`/exclusive `:end` are buffer positions;
+numbering or per-line rows. Both reading helpers and `buffer-info` include
+`:total-lines`: the absolute whole-buffer line count, even under narrowing.
+An empty buffer has one line; a terminal newline adds an empty line. Bound
+requested END by this value rather than guessing EOF; it does not authorize
+reading outside narrowing. Return the read result intact to retain metadata;
+extract fields locally when consuming a result inside one eval. `:start`/exclusive `:end` are buffer positions;
 `:start-line`/`:end-line` are the lines of those positions (end may be at the
 next line's beginning after a returned newline). Internal newlines and empty
 lines are preserved; the newline after requested END is excluded. Around adds
@@ -155,8 +163,31 @@ See [ADR-0001](docs/adr/0001-f0-buffer-helpers.md) for the contract.
 
 ### Editing live buffers with undo
 
-Prefer `(emacs-agent-replace-region BUFFER START END OLD NEW :tick TICK)`
-through `eval_elisp`. Positions are absolute characters, END exclusive. Supply
+Prefer one exact-text batch through `eval_elisp`:
+
+```elisp
+(emacs-agent-replace-texts "example.el"
+  '((:old "unique old text" :new "replacement")
+    (:old "another unique fragment" :new "another replacement"))
+  :tick TICK)
+```
+
+Take TICK from a fresh read. Every nonempty OLD must match exactly once in the
+original accessible text, case-sensitively (overlapping occurrences also count).
+All ranges are validated before any edit; overlaps/duplicates fail, adjacency
+is allowed. Apply bottom-up regardless of list order: NEW text is never used
+to locate a later OLD. Empty NEW deletes; for insertion, include a unique OLD
+anchor in NEW. All replacements share one atomic undo step and one initial
+tick check, with rollback of the entire buffer edit on error. No manual offsets,
+per-edit tick updates or hand-written transaction wrappers are needed.
+
+Result: `:buffer`, final `:tick`, `:modified` and integer `:changed` (number of
+non-no-op edits), not full source/diff. An all-no-op batch preserves tick and
+undo. Normal hooks run; external hook side effects cannot be rolled back.
+
+For an explicit-coordinate replacement, the existing
+`(emacs-agent-replace-region BUFFER START END OLD NEW :tick TICK)` remains
+available. Positions are absolute characters, END exclusive. Supply
 exact OLD text and the modification tick from a fresh read. Empty OLD with
 START=END inserts; empty NEW deletes. `:widen t` explicitly permits editing
 outside narrowing. Dead buffers, stale text/tick, read-only buffers, disabled
@@ -175,10 +206,10 @@ further truncate errors under a small output limit.
 A replacement is atomic and one undo step, separate from existing user undo.
 Normal change hooks run; hook errors roll back the target buffer's text, not
 arbitrary external side effects. Point/mark and narrowing track the edit as
-Emacs markers. The small result reports `:buffer`, `:start`, exclusive new
+Emacs markers. The small region-helper result reports `:buffer`, `:start`, exclusive new
 `:end`, `:tick`, `:modified` and `:changed`. Identical text is a no-op.
 
-The helper does not save. When saving is intended, use
+Neither helper saves. When saving is intended, use
 `(with-current-buffer BUFFER (save-buffer))`. This saves the whole buffer,
 including pre-existing user modifications, and keeps undo, file timestamps,
 backups and save hooks working normally. A save failure leaves the buffer edit
@@ -311,7 +342,7 @@ normal minibuffer hooks/keymaps; the agent does not supply a custom editor.
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 103 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 126 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh

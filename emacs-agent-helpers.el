@@ -36,7 +36,10 @@
   (append (list :buffer (buffer-name) :file buffer-file-name
                 :point (point) :point-min (point-min) :point-max (point-max)
                 :narrowed (buffer-narrowed-p) :modified (buffer-modified-p)
-                :tick (buffer-chars-modified-tick))
+                :tick (buffer-chars-modified-tick)
+                :total-lines (save-restriction
+                               (widen)
+                               (line-number-at-pos (point-max) t)))
           (emacs-agent-helpers--coordinates (point))))
 
 (defun emacs-agent-helpers--fit (result)
@@ -50,7 +53,10 @@ No preceding stdout is budgeted; call helpers as the sole final form."
   "Describe live BUFFER without changing editor state.
 TICK, when non-nil, must equal `buffer-chars-modified-tick'.  Lines are
 1-based, columns 0-based display columns (tabs expanded), positions character
-positions.  Coordinates are absolute even when narrowed."
+positions.  Coordinates are absolute even when narrowed.  :total-lines is
+also absolute for the whole buffer, including a terminal empty line after a
+newline; an empty buffer has one line.  This does not grant access outside
+narrowing."
   (with-current-buffer (emacs-agent-helpers--buffer buffer)
     (emacs-agent-helpers--tick tick)
     (let ((result (emacs-agent-helpers--info)))
@@ -71,7 +77,7 @@ Caller has established the accessible restriction."
     (save-excursion
       (save-restriction
         (widen)
-        (unless (<= end (line-number-at-pos (point-max) t))
+        (unless (<= end (plist-get info :total-lines))
           (error "Line range exceeds EOF"))
         (goto-char (point-min))
         (forward-line (1- start))
@@ -111,7 +117,9 @@ Preserve empty lines, including the terminal empty line after a newline.
 Return one literal :text substring, with metadata once per range, no per-line
 rows or numbering.  Internal newlines are preserved; the newline after END is
 not included.  :start/:end are absolute positions, end exclusive;
-:start-line/:end-line are the lines of those positions.  After a returned
+:start-line/:end-line are the lines of those positions.  :total-lines is the
+absolute whole-buffer line count even under narrowing; empty buffers have one
+line and a terminal newline adds an empty line.  After a returned
 newline, end may be at the beginning of the next line.  LIMIT bounds text
 characters including newlines.  :next-position equals end when truncated:
 resume with FROM and the same START/END, then concatenate :text without adding
@@ -164,6 +172,37 @@ POSITION, not at the user's point.  Other options follow
           (emacs-agent-helpers--read
            (max first (- line before)) (min last (+ line after)) nil limit
            (list :at (append (list :position position :symbol symbol) at))))))))
+
+(defun emacs-agent-helpers--replace-exact (start end old new)
+  "Replace START..END from OLD to NEW despite hooks moving point.
+Caller owns the atomic change group.  Check OLD after before-change hooks,
+not just before invoking deletion.  Keep an anchor across deletion hooks.
+Return actual inserted bounds as a (START . END) pair, tracked through hooks."
+  (let* ((anchor (copy-marker start))
+         end-marker
+         (phase 'delete)
+         (guard (lambda (beg finish)
+                  (unless (and (= beg (marker-position anchor))
+                               (if (eq phase 'delete)
+                                   (and (= finish (+ beg (length old)))
+                                        (equal old (buffer-substring-no-properties beg finish)))
+                                 (= beg finish)))
+                    (error "Change hook invalidated replacement; edit rolled back"))
+                  ;; Before-change hooks may move point even without edits.
+                  (goto-char anchor)))
+         (before-change-functions (append before-change-functions (list guard))))
+    (unwind-protect
+        (progn
+          (goto-char anchor)
+          (delete-region start end)
+          (setq phase 'insert
+                end-marker (copy-marker anchor t))
+          (goto-char anchor)
+          (when (> (length new) 0)
+            (insert (substring-no-properties new)))
+          (cons (marker-position anchor) (marker-position end-marker)))
+      (set-marker anchor nil)
+      (when end-marker (set-marker end-marker nil)))))
 
 (cl-defun emacs-agent-replace-region (buffer start end old new &key tick widen)
   "Replace explicit START..END in live BUFFER from OLD to NEW, with undo.
@@ -219,19 +258,17 @@ Undo follows normal Emacs lifetime/size limits, not persistent disk history."
                        (format " [truncated: %d of %d characters]"
                                (- preview-end start) (- end start))
                      ""))))
-        (let ((changed (not (equal old new))) result)
+        (let ((changed (not (equal old new))) (bounds (cons start end)) result)
           (unwind-protect
               (progn
                 (when changed (undo-boundary))
                 (atomic-change-group
                   (let ((handle (prepare-change-group)))
                     (when changed
-                      (goto-char start)
-                      (delete-region start end)
-                      (insert (substring-no-properties new)))
+                      (setq bounds (emacs-agent-helpers--replace-exact start end old new)))
                     (setq result
-                          (list :buffer (buffer-name) :start start
-                                :end (+ start (length new))
+                          (list :buffer (buffer-name) :start (car bounds)
+                                :end (cdr bounds)
                                 :tick (buffer-chars-modified-tick)
                                 :modified (buffer-modified-p) :changed changed))
                     (unless (emacs-agent-helpers--fit result)
@@ -240,6 +277,87 @@ Undo follows normal Emacs lifetime/size limits, not persistent disk history."
                     (undo-amalgamate-change-group handle))))
             (when changed (undo-boundary)))
           result)))))
+
+(cl-defun emacs-agent-replace-texts (buffer replacements &key tick widen)
+  "Apply REPLACEMENTS to live BUFFER as one atomic undo step.
+REPLACEMENTS is a nonempty list of (:old STRING :new STRING) plists.  Each
+nonempty OLD must occur exactly once in the original accessible text, with
+literal case-sensitive matching, including overlapping occurrences.  All
+ranges are found before editing; overlaps/duplicates between ranges are
+errors, adjacent ranges are allowed.  NEW may be empty to delete.  For an
+insertion, include a unique OLD anchor in NEW.  OLD=NEW is a no-op.
+
+TICK is a required integer expected modification tick from a fresh read.
+Check it once for the whole batch, not after each edit.  Apply bottom-up,
+independent of input order; do not match text introduced by another NEW.
+WIDEN explicitly permits access outside narrowing, which is restored.
+Read-only, disabled undo and external file conflicts are not overridden.
+
+Return a compact plist with :buffer, final :tick, :modified and :changed
+(the number of non-no-op replacements).  No automatic save or full diff.
+Use `save-buffer' explicitly when intended.  All changes, including normal
+change hooks in this buffer, roll back on error or a result-budget failure;
+external hook side effects cannot be rolled back.  Recheck OLD before each
+replacement in case a hook invalidates planned coordinates.  Point/mark and
+restrictions track edits as markers; windows are not selected.  All-no-op
+batches preserve tick, modified state and undo.  Use as the sole final form
+without stdout to preserve metadata within the evaluator output budget."
+  (unless (and replacements (proper-list-p replacements) (integerp tick))
+    (error "Expected nonempty replacements list and explicit integer :tick"))
+  (dolist (edit replacements)
+    (unless (and (proper-list-p edit) (= (length edit) 4)
+                 (cl-loop for key in edit by #'cddr always (memq key '(:old :new)))
+                 (stringp (plist-get edit :old)) (> (length (plist-get edit :old)) 0)
+                 (stringp (plist-get edit :new)))
+      (error "Each replacement must contain nonempty :old and string :new")))
+  (with-current-buffer (emacs-agent-helpers--buffer buffer)
+    (emacs-agent-helpers--tick tick)
+    (when buffer-read-only (error "Buffer is read-only"))
+    (when (eq buffer-undo-list t) (error "Undo is disabled in buffer"))
+    (when (and buffer-file-name (not (verify-visited-file-modtime)))
+      (error "Visited file changed on disk; resolve conflict before editing"))
+    (save-mark-and-excursion
+      (save-restriction
+        (save-match-data
+          (when widen (widen))
+          (let ((case-fold-search nil) planned previous-end (changed 0) result)
+            (cl-loop for edit in replacements for index from 1 do
+                     (goto-char (point-min))
+                     (let ((old (plist-get edit :old)) (new (plist-get edit :new)))
+                       (unless (search-forward old nil t)
+                         (error "Replacement %d OLD not found; reread before retrying" index))
+                       (let ((start (match-beginning 0)) (end (match-end 0)))
+                         ;; Restart one character after the first match START,
+                         ;; not END: \"aa\" is ambiguous in \"aaa\".
+                         (goto-char (1+ start))
+                         (when (search-forward old nil t)
+                           (error "Replacement %d OLD is not unique; use more context" index))
+                         (push (list start end old new) planned))))
+            (setq planned (sort planned (lambda (a b) (< (car a) (car b)))))
+            (dolist (edit planned)
+              (when (and previous-end (< (car edit) previous-end))
+                (error "Replacement ranges overlap or are duplicated"))
+              (setq previous-end (cadr edit))
+              (unless (equal (nth 2 edit) (nth 3 edit)) (cl-incf changed)))
+            (unwind-protect
+                (progn
+                  (when (> changed 0) (undo-boundary))
+                  (atomic-change-group
+                    (let ((handle (prepare-change-group)))
+                      (dolist (edit (reverse planned))
+                        (pcase-let ((`(,start ,end ,old ,new) edit))
+                          (unless (and (<= (point-min) start end (point-max))
+                                       (equal old (buffer-substring-no-properties start end)))
+                            (error "Planned OLD changed during batch; entire batch rolled back"))
+                          (unless (equal old new)
+                            (emacs-agent-helpers--replace-exact start end old new))))
+                      (setq result (list :buffer (buffer-name) :tick (buffer-chars-modified-tick)
+                                         :modified (buffer-modified-p) :changed changed))
+                      (unless (emacs-agent-helpers--fit result)
+                        (error "eval output limit too small for helper metadata"))
+                      (undo-amalgamate-change-group handle))))
+              (when (> changed 0) (undo-boundary)))
+            result))))))
 
 (provide 'emacs-agent-helpers)
 ;;; emacs-agent-helpers.el ends here

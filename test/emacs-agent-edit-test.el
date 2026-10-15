@@ -243,6 +243,23 @@
     (undo-only 1)
     (should (equal (buffer-string) "original\n"))))
 
+(ert-deftest emacs-agent-edit-region-bounds-follow-deletion-hook-anchor ()
+  (emacs-agent-edit-test--buffer "left right"
+    (let ((calls 0) result)
+      (let ((after-change-functions
+             (list (lambda (&rest _)
+                     (when (= (cl-incf calls) 1)
+                       (save-excursion (goto-char (point-min)) (insert "!")))))))
+        (setq result (emacs-agent-replace-region (current-buffer) 6 11 "right" "R"
+                                                  :tick (buffer-chars-modified-tick))))
+      (should (equal (buffer-string) "!left R"))
+      (should (= (plist-get result :start) 7))
+      (should (= (plist-get result :end) 8))
+      (should (equal (buffer-substring-no-properties (plist-get result :start)
+                                                    (plist-get result :end)) "R")))
+    (undo-only 1)
+    (should (equal (buffer-string) "left right"))))
+
 (ert-deftest emacs-agent-edit-eval-and-prompt ()
   (emacs-agent-edit-test--buffer "abc"
     (let* ((wire (emacs-agent-eval

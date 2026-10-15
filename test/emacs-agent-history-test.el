@@ -191,4 +191,28 @@
         (should (= (plist-get parsed :end) (point-max)))
         (should (= (plist-get parsed :end-line) 4))))))
 
+(ert-deftest emacs-agent-history-batch-edit-one-call-and-compact-wire ()
+  (emacs-agent-test-adapter
+    (with-temp-buffer
+      (insert "left right")
+      (buffer-enable-undo) (setq buffer-undo-list nil)
+      (let* ((run (emacs-agent-test--submit "edit both"))
+             (expression (format (concat "(emacs-agent-replace-texts (current-buffer) "
+                                         "'((:old \"left\" :new \"L\") (:old \"right\" :new \"R\")) :tick %d)")
+                                 (buffer-chars-modified-tick)))
+             (delivery (emacs-agent-test--calls run (list (list "batch-edit" expression))))
+             (result (cdr (assoc "batch-edit" (nth 2 delivery))))
+             (parsed (read (substring result 4)))
+             (data (emacs-agent-test--wire run nil))
+             (tool (seq-find (lambda (m) (equal (plist-get m :role) "tool"))
+                             (plist-get data :messages))))
+        (should (= (emacs-agent-run-tool-count run) 1))
+        (should (= (plist-get parsed :changed) 2))
+        (should (equal (plist-get tool :content) (string-trim result)))
+        (should (< (length result) 200))
+        (should (equal (buffer-string) "L R"))
+        (undo-only 1)
+        (should (equal (buffer-string) "left right")))))
+  (should (string-match-p "Prefer one emacs-agent-replace-texts batch" emacs-agent-system-prompt)))
+
 ;;; emacs-agent-history-test.el ends here

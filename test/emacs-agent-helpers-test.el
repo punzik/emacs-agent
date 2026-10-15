@@ -14,6 +14,9 @@
       (let* ((texts (cadr case))
              (result (emacs-agent-read-lines (current-buffer) 1 (length texts))))
         (should (equal (emacs-agent-helpers-test--texts result) texts))
+        (should (= (plist-get result :total-lines) (length texts)))
+        (should (= (plist-get (emacs-agent-buffer-info (current-buffer)) :total-lines)
+                   (length texts)))
         (should-not (plist-get result :truncated))
         (should (= (plist-get result :end) (point-max)))
         (should-not (plist-member result :lines))
@@ -22,6 +25,7 @@
         (should (equal (plist-get result :text) (buffer-string)))
         (should-error (emacs-agent-read-lines (current-buffer) 1 (1+ (length texts))))
         (let ((around (emacs-agent-read-around (current-buffer) (point-max))))
+          (should (= (plist-get around :total-lines) (length texts)))
           (should (= (plist-get (plist-get around :at) :line) (length texts))))))))
 
 (ert-deftest emacs-agent-helpers-line-14-regression ()
@@ -83,6 +87,26 @@
                                    (buffer-chars-modified-tick))))
         (should (eq window (selected-window)))
         (should (equal window-state (list (window-buffer) (window-start) (window-point))))))))
+
+(ert-deftest emacs-agent-helpers-total-lines-is-absolute-and-live ()
+  (with-temp-buffer
+    (insert "a\nb\nc\n")
+    (narrow-to-region 2 4)
+    (goto-char 3)
+    (dolist (total '(4 5))
+      (when (= total 5)
+        (save-excursion
+          (save-restriction (widen) (goto-char (point-max)) (insert "tail\n"))))
+      (let ((state (list (point) (point-min) (point-max) (buffer-string)
+                         (buffer-chars-modified-tick) (buffer-modified-p))))
+        (dolist (result (list (emacs-agent-buffer-info (current-buffer))
+                              (emacs-agent-read-lines (current-buffer) 2 2)
+                              (emacs-agent-read-around (current-buffer) 3
+                                                       :before 0 :after 0)))
+          (should (= (plist-get result :total-lines) total))
+          (should (plist-get result :narrowed)))
+        (should (equal state (list (point) (point-min) (point-max) (buffer-string)
+                                   (buffer-chars-modified-tick) (buffer-modified-p))))))))
 
 (ert-deftest emacs-agent-helpers-partial-line-restriction ()
   (with-temp-buffer
@@ -248,6 +272,18 @@
 
 (ert-deftest emacs-agent-helpers-loaded-with-one-tool ()
   (should (featurep 'emacs-agent-helpers))
-  (should (string-match-p "emacs-agent-read-around" emacs-agent-system-prompt)))
+  (should (string-match-p "emacs-agent-read-around" emacs-agent-system-prompt))
+  (should (string-match-p "call emacs-agent-buffer-info instead of reading text again"
+                          emacs-agent-system-prompt))
+  (should (string-match-p "A newly obtained tick does not validate previously read text"
+                          emacs-agent-system-prompt))
+  (should (string-match-p
+           (regexp-quote "(plist-get (emacs-agent-buffer-info \"example.el\") :tick)")
+           emacs-agent-system-prompt))
+  (should (string-match-p "It has no :fields argument" emacs-agent-system-prompt))
+  (dolist (rule '("resume SAME START/END" "same :tick until :truncated nil"
+                  "Never claim full verification from partial reads"
+                  "explicitly scoped checks of changed ranges suffice"))
+    (should (string-match-p (regexp-quote rule) emacs-agent-system-prompt))))
 
 ;;; emacs-agent-helpers-test.el ends here

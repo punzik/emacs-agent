@@ -355,7 +355,7 @@ policy, transform/truncation isolation, unsupported backend preflight, opaque
 field poisoning, nested signatures and streaming batch order. Other providers
 are deliberately rejected, not claimed to have been integration-tested.
 
-## Post-MVP F0c: model I/O efficiency (first two slices)
+## Post-MVP F0c: model I/O efficiency (first three slices)
 
 A user comparison found 37 vs 3 tool calls and 136,919 vs 3,483 characters of
 textual tool results. `buffer-string` had serialized font-lock/eglot properties;
@@ -377,10 +377,24 @@ metadata, no `:lines` rows or line numbering. Internal newlines are preserved,
 the newline after requested END is excluded. Exclusive end is the continuation
 position; concatenate chunks without adding separators, including when split
 on a newline. Around retains `:at`. This intentionally changes the alpha helper
-API, without a compatibility mode. Batch exact-text edits and usage records
-remain pending; do not call this a completed token-efficiency fix.
+API, without a compatibility mode. Usage records remain pending; do not call
+this a completed token-efficiency fix.
 
-Validation: **103 offline ERT tests** and byte compilation with warnings-as-errors
+`emacs-agent-replace-texts` now takes a list of unique OLD/NEW pairs and one
+expected tick for the entire batch. It finds all literal, case-sensitive OLD
+ranges in the original accessible text, rejects ambiguity/self-overlap/range
+overlap before edits, applies bottom-up, and uses one atomic undo group.
+Normal hooks remain active; OLD is rechecked at each planned position. Any
+error, including output-budget failure, rolls back all edits in that buffer.
+A shared replacement primitive anchors insertion across deletion hooks, checks
+OLD after before-change hooks, and resets point after hooks that move it.
+Region-helper result bounds also track markers when hooks shift the anchor.
+The result is only buffer/tick/modified/changed-count; saving is separate with
+`save-buffer`. This remains ordinary Lisp through the sole `eval_elisp`, not a
+new tool or unrestricted-eval rollback guarantee. The system prompt now prefers
+this batch API instead of computing offsets or managing per-edit ticks.
+
+Validation: **126 offline ERT tests** and byte compilation with warnings-as-errors
 via `nix-shell -p gnumake --run 'make clean test compile'`. Tests cover properties
 without source/undo changes, huge property metadata under a small output budget,
 Unicode/empty strings, explicit property inspection/printing and real pinned
@@ -388,9 +402,41 @@ gptel dry-run wire content, including the actual compact-read tool message.
 Continuation coverage now includes newline characters, EOF empty lines,
 mid-line fragments and printed-budget shrinking with properties/escaping.
 Existing stdout/errors/limits/replay tests pass. A synthetic 100-line fixture
-shrinks from about 7,515 to 2,127 printed characters (~72%, not a token count).
-No real-provider comparison has been run after the compact-read slice. Reload
-`emacs-agent-helpers.el` and `emacs-agent.el` before testing; use a clean session
+shrinks from about 7,532 to 2,144 printed characters (~72%, not a token count).
+The prompt now gives 7 executable examples instead of placeholder-only API
+hints: tests extract the actual fenced code and run metadata/read/continuation,
+read→batch, around, read→region and save in disposable visited files. Stale
+continuation ticks fail; local bindings are not assumed across tool calls.
+Reading and buffer-info metadata now include absolute :total-lines (including
+the terminal empty line). The primary prompt example bounds END by this count
+and returns the full helper result; field extraction stays local to a consuming
+eval. Tests also run that exact example on empty, short and >100-line files.
+The structured prompt is 4,984 vs the former 5,037 characters, not a token measure.
+The user-run compact-read test subsequently showed 18 tools/12,298 result
+characters and exposed a manually built batch failing after its first edit.
+New batch tests cover all-or-nothing/undo/history, ambiguity/case/overlaps,
+no-op/read-only/hooks/narrowing, conflict/save behavior and one actual wire tool
+call with compact output. Subsequent user-run batch smoke confirmed six
+replacements in one call, 5 tools/10,151 result characters/0 errors. Metadata-only
+guidance then removed a redundant text read: 6 tools/7,795 characters, with one
+invented :fields API error before any edit. The executable-example prompt's
+user-run smoke returned 7 tools/3,065 characters/1 EOF error: six changes and a
+save succeeded, with no post-edit read. That run discarded read metadata and
+guessed END=200, then needed buffer-size/count-lines recovery. The :total-lines
+and full-result revision then passed user smoke: 4 tools/7,609 characters/0 errors.
+Its verification returned :truncated t and left 550 characters unread. The latest
+prompt now forbids claiming full verification from partial reads: continue the
+same range/tick until complete, or explicitly state the checked scope. Checking
+only changed ranges is sufficient; whole-file rereads are not mandated. This
+latest prompt's user smoke returned 5 tools/7,685 characters/1 validation error
+(an empty replacement pair, rejected before edits). The corrected six-edit
+batch and save succeeded. Verification contained all six NEW blocks completely;
+only 75 characters of unchanged function body remained unread. This establishes
+changed-block coverage, not full-file verification. Task-specific documentation
+quality is a model issue, not a new agent constraint.
+These are character counts, not usage measurements;
+undo/rollback were not directly tested in these successful live batches.
+Reload `emacs-agent-helpers.el` and `emacs-agent.el` before testing; use a clean session
 for a fair size/usage comparison, since previous tool results are not rewritten.
 
 ## Post-MVP F0b: durable streaming blocks (schema 2)

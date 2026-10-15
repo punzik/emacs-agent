@@ -1,7 +1,7 @@
 # Emacs Agent после MVP: выводы из Pi/Pigo и план развития
 
 **Статус:** F0 и F0b реализованы; начат F0c — экономный model I/O.
-103 offline ERT и byte compilation с
+126 offline ERT и byte compilation с
 warnings-as-errors проходят. Для буферного редактирования F0 есть пользовательский
 live smoke и подтверждение undo; отдельный live smoke F0b ещё не выполнялся.
 Остальные post-MVP этапы не реализованы.
@@ -409,11 +409,32 @@ text properties в `buffer-string` (2823 → 32768 символов с усеч�
    lossless продолжением, включая разрыв на newline. `:start-line`/`:end-line`
    описывают абсолютные позиции `:start`/exclusive `:end`. Старый `:lines`
    удалён без compatibility mode. Around сохраняет `:at`. 103 ERT и compile
-   проходят; синтетические 100 строк: ~7515 → 2127 printed characters (~72%).
+   проходят; синтетические 100 строк: ~7532 → 2144 printed characters (~72%).
    Новый live smoke этого формата ещё не запускался.
-3. **Далее согласовать и реализовать:** пакетные exact-text OLD/NEW замены в
-   живом буфере, без ручных offsets; атомарность/undo/stale checks не ослаблять.
-   Определить уникальность, порядок/перекрытия и all-or-nothing контракт.
+3. **Согласовано и реализовано offline:** `emacs-agent-replace-texts` с одним
+   ожидаемым tick и непустым списком уникальных OLD/NEW. Все диапазоны ищутся
+   в исходном доступном тексте; неоднозначные/самоперекрывающиеся OLD и
+   пересечения/дубликаты диапазонов — отказ до edits, соседние допустимы.
+   Применение снизу вверх, весь batch атомарен и отменяется одним undo-шагом;
+   no-op не меняет историю, save отдельно. В prompt batch теперь default;
+   region helper сохранён для явных координат. 126 ERT и compile проходят,
+   включая rollback на hooks/budget, прежнюю undo history, actual wire и
+   исполнение 7 реальных примеров из prompt на временных файлах. Prompt
+   структурирован и сокращён с 5037 до 4984 символов (не token estimate).
+   После live EOF-ошибки добавлен абсолютный :total-lines в metadata чтения и
+   buffer-info; первый пример ограничивает END по EOF и возвращает весь plist,
+   извлечение полей оставлено локальному потреблению. Пустые/короткие файлы,
+   терминальный newline и narrowing покрыты offline tests. Следующий live smoke
+   прошёл без EOF-ошибок, но модель не дочитала усечённую проверку. В prompt
+   усилено правило: для полной проверки продолжать тот же range/tick до
+   :truncated nil либо явно ограничивать scope проверки; полный reread файла
+   не обязателен. Последний smoke подтвердил все 6 NEW в проверочном чтении
+   (непрочитаны 75 символов неизменённого тела), один исправленный batch и save.
+   Ошибка пустой replacement-пары отклонена до edits; итог 5 calls/7685 chars,
+   1 validation error. Это покрытие изменений, не полная проверка файла.
+   Пользовательский live smoke подтвердил один batch из 6 замен; затем
+   metadata-only guidance устранил повторное чтение ради tick. Undo/rollback
+   в этих успешных live-прогонах отдельно не проверялись.
 4. **Далее согласовать и реализовать:** per-request/run usage с отдельными
    input/output/cache counts; unknown не превращать в 0, cumulative usage не
    суммировать повторно. Сначала проверить точный gptel callback contract.
@@ -646,7 +667,7 @@ late callbacks и независимость старой ветви; UI явн�
 |---|---|---|
 | F0 | Helpers: сигнатуры, структурированный результат, narrowing и EOF | Принято: [ADR-0001](adr/0001-f0-buffer-helpers.md); абсолютные координаты, явный widening, terminal empty line, plist с продолжением |
 | F0b | Durable blocks, partial markers, identifiers/timestamps | Принято: [ADR-0003](adr/0003-durable-streaming-blocks.md); schema 2, snapshot-only, partial checkpoints, без миграции/обратной совместимости |
-| F0c | Экономный model I/O, пакетные OLD/NEW edits, usage | [ADR-0004](adr/0004-efficient-model-io.md); plain strings и compact reads реализованы, batch edits/usage согласовать до кода |
+| F0c | Экономный model I/O, пакетные OLD/NEW edits, usage | [ADR-0004](adr/0004-efficient-model-io.md); plain strings, compact reads и batch edits реализованы, usage согласовать до кода |
 | F1 | Собственные roots или чтение `.pi`/`.pigo`? | Настраиваемые roots агента; существующие ресурсы подключать явно, не смешивать автоматически |
 | F1 | Читать инструкции всех filesystem ancestors или только scope? | Global + project root → directory source buffer; для global и TRAMP согласовать отдельно |
 | F1 | Template syntax и история ввода | Один формат, например именованные `{{name}}`; явно показывать expansion/provenance, не auto-detect несколько диалектов |
@@ -688,8 +709,8 @@ loading. Любые новые пользовательские настройк
 7. После каждого этапа обновить README/интеграционные ограничения, зафиксировать
    проверенные факты и оставшиеся вопросы. Коммит — только по запросу пользователя.
 
-**Рекомендуемый следующий шаг:** продолжить F0c: согласовать пакетные exact-text
-edits и точный usage accounting. Компактное чтение уже реализовано. Opt-in
+**Рекомендуемый следующий шаг:** opt-in live smoke пакетных exact-text edits,
+затем согласовать точный usage accounting для завершения F0c. Opt-in
 live smoke сравнивать на одинаковом исходнике/модели с учётом cache. После F0c
 вернуться к трём решениям F1 (roots, hierarchy, template syntax). Большая
 перестройка ядра для этого не требуется.
