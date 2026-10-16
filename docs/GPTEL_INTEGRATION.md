@@ -491,6 +491,41 @@ committed logs. The second mode inherited the first turn's history, so these
 numbers validate accounting only, not comparative mode efficiency or savings
 against Pi. A fresh same-task/model/cache-state benchmark remains optional.
 
+## Post-MVP F2: offline steering seam (not a user feature yet)
+
+User-approved context semantics: `current` retains original plus delivered
+steering snapshots of the active run, eliding only adjacent whole-snapshot
+equality; text is always delivered, A→B→A survives. Pending inputs do not alter
+model context. `full` and nil retain their meanings. On final boundary, an
+undelivered clarification becomes a separate ordinary FIFO run, not another
+HTTP request in the completed run. Cancel/error remains explicit recovery,
+not automatic resubmission. See [ADR-0007](adr/0007-steering-boundaries.md).
+
+The spike uses real pinned non-streaming response parsing and TOOL→TRET→WAIT,
+with only HTTP mocked. A private test handler runs after protocol restoration
+and before `gptel--handle-wait`: both tool results already exist. With budget=1,
+no steering/HTTP occurs until the second tool resumes and completes. Tests
+exercise nil/current/full, A→A→B→A, unchanged execution source/context, subsequent
+independent runs and global handler isolation. A test DONE handler enqueues a
+new run; an already queued ordinary ask runs first, and duplicate terminal
+handling cannot enqueue the same pending text again.
+
+The old canonical validator rejected every second user record of a run. It now
+permits additional user inputs only with a nonempty unique `:input-id`, within
+a contiguous run group. Missing/duplicate/invalid IDs and returning to an old
+run after a newer one still fail. Input IDs are metadata, never API fields.
+Old single-input records remain valid. `current` dedup is a pure projection:
+region/text/narrowing changes count even at the same point; raw history is
+unchanged and full retains every snapshot. gptel may merge adjacent user wire
+messages, so assertions count context blocks, not just message objects.
+
+161 ERT and warnings-as-errors compile pass. No new model calls occurred.
+Production WAIT/DONE do **not** yet install the prototype steering handlers;
+commands, pending lifecycle/limits, edit/withdraw, durable recovery and complete
+prepared-input freezing (including resources/config on final conversion) remain
+F2 implementation work. These seam tests do not claim streaming input-delivery
+UI or the entire F2 stage is ready.
+
 ## Post-MVP F1: project-root instructions
 
 Scope was explicitly narrowed: one project-root file, no global/ancestor/child

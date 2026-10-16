@@ -1,7 +1,7 @@
 # Emacs Agent после MVP: выводы из Pi/Pigo и план развития
 
-**Статус:** F0, F0b, F0c и ограниченный F1 реализованы; следующий этап — F2.
-157 offline ERT и byte compilation с
+**Статус:** F0, F0b, F0c и ограниченный F1 реализованы; F2 начат с offline spike,
+UI steering ещё не реализован. 161 offline ERT и byte compilation с
 warnings-as-errors проходят. Для буферного редактирования F0 есть пользовательский
 live smoke и подтверждение undo; отдельный live smoke F0b ещё не выполнялся.
 Остальные post-MVP этапы не реализованы.
@@ -515,18 +515,29 @@ callbacks проверены, display failure не блокирует очере
 
 **Работа:**
 
-1. Проверить отдельным offline spike точку вставки user input перед следующим
-   HTTP-запросом в текущем gptel FSM. Не предполагать, что text callback даёт
-   управление продолжением; не переписывать transport ради удобства.
+1. **Offline spike выполнен:** pinned TOOL→TRET→WAIT допускает доставку после
+   обоих tool results, перед default WAIT HTTP. Проверены обычная batch и
+   budget pause/resume, несколько snapshots и nil/current/full; DONE переводит
+   pending input в отдельный run через обычный FIFO. Найдено ограничение
+   one-user-per-run: добавлен уникальный :input-id для дополнительных user
+   inputs того же contiguous run. Повторы/возврат к старому run запрещены.
+   `current` проецирует все snapshots run, dedup только соседних equal; raw
+   history не меняется. Actual dry-run сохраняет все contexts даже при
+   объединении gptel соседних user messages. 161 ERT и compile проходят.
+   Прототипные delivery handlers существуют только в тесте; это не готовый UI.
 2. Добавить явную команду steering, сохранив существующую семантику `ask`/FIFO.
 3. Разделить prepared, queued, delivered и withdrawn inputs. Ограничить объём
    и число записей; показать pending state, предоставить отзыв для редактирования.
-4. Захватывать контекст steering при его собственном вводе. Согласовать,
-   какой snapshot является `current` внутри уже работающего run. Steering
-   не переносит run в другую сессию и не меняет default tool source buffer
-   молча; отличать source корректировки от execution context инструмента.
-5. Применять сообщения после полной tool batch, до следующей генерации;
-   согласовать поведение сообщения, принятого на границе final answer.
+4. **Согласовано:** снимок steering — по месту ввода. `current` сохраняет
+   исходный снимок и все доставленные snapshots этого run до завершения;
+   соседние полностью равные snapshots не дублируются в wire, текст уточнения
+   доставляется всегда. A→B→A сохраняется; pending/withdrawn не меняют current.
+   При новом run предыдущие snapshots не отправляются при `current`;
+   full/nil сохраняют смысл. Steering не меняет session/default tool source.
+5. Применять сообщения после полной tool batch, до следующей генерации.
+   **Согласовано:** на final boundary недоставленное уточнение становится новым
+   запросом обычного FIFO той же сессии, не продолжением завершённого run.
+   Решения: [ADR-0007](adr/0007-steering-boundaries.md).
 6. При cancel/error возвращать недоставленный текст для явного повторного
    использования, не запускать его автоматически. Не включать его в delivered
    model history; durable audit может отдельно сохранять pending input.
@@ -710,8 +721,8 @@ late callbacks и независимость старой ветви; UI явн�
 | F1 | Доставка инструкций | Принято: frozen saved-disk snapshot на input; отдельный блок в system prompt текущего run, старые snapshots только audit |
 | F1 | Template syntax и история ввода | Templates отложены пользователем до реальных повторяющихся сценариев |
 | F1/F5 | Когда перечитывать ресурсы? | При подготовке каждого input; queued inputs/run используют frozen snapshot |
-| F2 | Что означает `current` после steering? | Предлагается последний delivered user input; original и steering snapshots остаются в archive; подтвердить изменение семантики |
-| F2 | Последнее сообщение на final boundary | Принятое до закрытия run требует следующую генерацию; после закрытия текст остаётся для явного нового run |
+| F2 | Что означает `current` после steering? | Принято: original + все delivered snapshots текущего run; dedup только соседних equal, A→B→A сохраняется; pending не влияет |
+| F2 | Последнее сообщение на final boundary | Принято: недоставленное уточнение становится новым запросом обычного FIFO; не переоткрывать run и не смешивать с recovery после cancel/error |
 | F3 | Хранение и cleanup artifacts | Приватное durable хранилище с references; явная cleanup policy, не бессрочный temp-file мусор |
 | F4 | Auto compaction default/окно модели | Начать с manual + opt-in auto; окно задаётся явно/из проверенных metadata |
 | F5 | YAML/parser dependency и precedence | Совместимость Agent Skills, bounded data parsing, ошибки duplicates одного уровня |
@@ -747,8 +758,10 @@ loading. Любые новые пользовательские настройк
 7. После каждого этапа обновить README/интеграционные ограничения, зафиксировать
    проверенные факты и оставшиеся вопросы. Коммит — только по запросу пользователя.
 
-**Рекомендуемый следующий шаг:** opt-in live smoke ограниченного F1 при
-необходимости, затем offline spike F2 для точки steering в текущем gptel FSM.
+**Рекомендуемый следующий шаг:** реализация pending lifecycle/UI F2 на основе
+проверенного offline seam: steering, просмотр/отзыв/редактирование и bounded
+limits, frozen inputs и recovery при cancel/error. Прототипные тесты не заменяют
+эту реализацию. Opt-in live smoke F1/F2 остаётся отдельной проверкой.
 Templates по решению пользователя отложены. Отдельный benchmark экономии
 токенов F0c остаётся опциональным и требует одинакового исходника, фактической
 модели/настроек и сопоставимого cache state.

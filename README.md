@@ -86,14 +86,21 @@ longer selections retain only bounds. No full buffer is captured. Context is
 serializable framed JSON, escaped so buffer names/region text cannot forge
 section delimiters; it never appears as part of displayed user text.
 
-`emacs-agent-context-history` defaults to `current`: only the active user
-turn's snapshot is sent, including every tool continuation. `full` includes
-all user snapshots; nil sends no automatic context. Tool arguments/results
+`emacs-agent-context-history` defaults to `current`: the active run's input
+snapshots are sent, including every tool continuation. Adjacent identical
+snapshots are elided without dropping input text; A→B→A is retained. `full`
+includes all captured snapshots; nil sends no automatic context. Tool arguments/results
 and assistant/user text are never removed by this policy. Policy is frozen at
 submission, so queued runs and their tool continuations cannot switch modes
 mid-turn. Filtering never mutates stored snapshots or history records.
 Ambient gptel prompt transforms and chat UI history truncation are disabled
 for the private transport only; user's gptel settings/hooks are unchanged.
+
+F2 steering is not yet a user command. Its offline FSM spike confirms delivery
+after a complete tool batch and final-boundary conversion to a new FIFO run.
+Canonical history now supports unique input IDs within one contiguous run;
+pending UI/edit/withdraw/recovery still need implementation. See
+[ADR-0007](docs/adr/0007-steering-boundaries.md).
 
 ### Temporary final-answer message
 
@@ -403,7 +410,7 @@ normal minibuffer hooks/keymaps; the agent does not supply a custom editor.
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 157 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 161 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh

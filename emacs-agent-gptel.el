@@ -116,16 +116,18 @@ call/result construction and the within-run transcript."
 (defun emacs-agent-gptel--validate-history (messages)
   "Validate normalized MESSAGES without mutating or dropping fields.
 Unknown protocol fields are rejected rather than silently stripped.  Each
-assistant/tool record must belong to the preceding user turn."
+assistant/tool record must belong to the preceding run's user input group.
+Additional user inputs in that group require a unique :input-id."
   (unless (proper-list-p messages) (error "Malformed agent history list"))
-  (let (turn seen-turns (ids (make-hash-table :test #'equal)))
+  (let (turn seen-turns (ids (make-hash-table :test #'equal))
+        (inputs (make-hash-table :test #'equal)))
     (dolist (message messages)
       (unless (and (proper-list-p message) (cl-evenp (length message)))
         (error "Malformed agent history record"))
       (let* ((role (plist-get message :role))
              (run-id (plist-get message :run-id))
              (allowed (pcase role
-                        ('user '(:role :run-id :text :context))
+                        ('user '(:role :run-id :input-id :text :context))
                         ('assistant '(:role :run-id :text))
                         ('tool '(:role :run-id :id :name :args :result :protocol))
                         ('unsupported-protocol
@@ -139,9 +141,15 @@ assistant/tool record must belong to the preceding user turn."
         (unless (and (stringp run-id) (not (string-empty-p run-id)))
           (error "Missing history turn ID"))
         (if (eq role 'user)
-            (progn
-              (when (member run-id seen-turns) (error "Duplicate history user turn"))
-              (push run-id seen-turns)
+            (let ((input-id (plist-get message :input-id)))
+              (when (or (plist-member message :input-id) (equal run-id turn))
+                (unless (and (stringp input-id) (not (string-empty-p input-id))
+                             (not (gethash input-id inputs)))
+                  (error "Missing or duplicate history input ID"))
+                (puthash input-id t inputs))
+              (unless (equal run-id turn)
+                (when (member run-id seen-turns) (error "Duplicate history user turn"))
+                (push run-id seen-turns))
               (setq turn run-id)
               (when (plist-get message :context)
                 (emacs-agent-context-render (plist-get message :context))))
@@ -162,28 +170,33 @@ assistant/tool record must belong to the preceding user turn."
 
 (cl-defun emacs-agent-gptel--history (run &optional (policy (emacs-agent-run-context-policy run)))
   "Build RUN's gptel history using its frozen POLICY, or an explicit override.
-Filter only editor context; never edit stored records or protocol pairs."
+Filter only editor context; never edit stored records or protocol pairs.
+With `current', keep this run's input snapshots, eliding only adjacent equal
+snapshots.  Text always remains; `full' retains every captured snapshot."
   (unless (memq policy '(nil current full)) (error "Invalid agent context policy: %s" policy))
   (emacs-agent-gptel--validate-history
    (emacs-agent-session-messages (emacs-agent-run-session run)))
-  (mapcar
-   (lambda (message)
-     (pcase (plist-get message :role)
-       ('user
-        (let ((text (plist-get message :text))
-              (context (plist-get message :context)))
-          (list 'prompt
-                (if (and context
-                         (or (eq policy 'full)
-                             (and (eq policy 'current)
-                                  (equal (plist-get message :run-id) (emacs-agent-run-id run)))))
-                    (concat text "\n\n" (emacs-agent-context-render context))
-                  text))))
-       ('assistant (list 'response (plist-get message :text)))
-       ('tool (cons 'tool (cl-loop for key in '(:id :name :args :result)
-                                  append (list key (plist-get message key)))))
-       (_ (error "Unsupported agent history record"))))
-   (emacs-agent-session-messages (emacs-agent-run-session run))))
+  (let (previous-context)
+    (mapcar
+     (lambda (message)
+       (pcase (plist-get message :role)
+         ('user
+          (let ((text (plist-get message :text))
+                (context (plist-get message :context)))
+            (list 'prompt
+                  (if (and context
+                           (or (eq policy 'full)
+                               (and (eq policy 'current)
+                                    (equal (plist-get message :run-id) (emacs-agent-run-id run))
+                                    (prog1 (not (equal context previous-context))
+                                      (setq previous-context context)))))
+                      (concat text "\n\n" (emacs-agent-context-render context))
+                    text))))
+         ('assistant (list 'response (plist-get message :text)))
+         ('tool (cons 'tool (cl-loop for key in '(:id :name :args :result)
+                                    append (list key (plist-get message key)))))
+         (_ (error "Unsupported agent history record"))))
+     (emacs-agent-session-messages (emacs-agent-run-session run)))))
 
 (defun emacs-agent-gptel--tool-entries (calls info)
   "Pair pending CALLS with provider IDs from INFO.
