@@ -223,4 +223,33 @@
       (should-error (emacs-agent-store-save session))
       (should (equal old (emacs-agent-test-store--text file))))))
 
+(ert-deftest emacs-agent-store-fast-printer-roundtrip-without-pretty-layout ()
+  (emacs-agent-test-store
+    (let* ((session (emacs-agent-session-get nil))
+           (text (concat "Привет \"quoted\"\n\t\\ literal #.(error)\n"
+                         (make-string 20000 ?x)))
+           (run (make-emacs-agent-run :id "fast-active" :session session
+                                      :user-text text :status 'requesting))
+           (queued (make-emacs-agent-run :id "fast-queued" :session session :user-text "queued")))
+      (setf (emacs-agent-session-messages session)
+            (list (list :role 'user :run-id "fast-active" :text text)
+                  (list :role 'assistant :run-id "fast-active" :text "answer"))
+            (emacs-agent-session-active-run session) run
+            (emacs-agent-session-pending-runs session) (list queued))
+      (emacs-agent-session-record run 'reasoning text)
+      (emacs-agent-session-record run 'reasoning-end nil)
+      (let ((expected (emacs-agent-store--snapshot session)) file)
+        (cl-letf (((symbol-function 'pp)
+                   (lambda (&rest _) (ert-fail "Autosave must not pretty-print the whole snapshot"))))
+          (setq file (emacs-agent-store-save session)))
+        (should (= (logand (file-modes file) #o777) #o600))
+        (with-temp-buffer
+          (insert-file-contents file)
+          ;; Read DATA only: code-looking text is a quoted string.
+          (should (equal (read (current-buffer)) expected))
+          (should (= (how-many "^  (" (point-min) (point-max))
+                     (+ (length (plist-get expected :messages))
+                        (length (plist-get expected :events))
+                        (length (plist-get expected :runs))))))))))
+
 ;;; emacs-agent-store-test.el ends here

@@ -158,6 +158,26 @@ Concatenate each block once, avoiding quadratic string accumulation."
       (plist-put data :events (emacs-agent-store--compact-events (plist-get data :events)))
       data)))
 
+(defun emacs-agent-store--print (data)
+  "Print validated snapshot DATA without recursive pretty-print layout.
+Keep top-level fields and individual messages/events/runs on separate lines.
+The Lisp data and schema are unchanged; long strings stay escaped by the
+caller's print settings.  Pretty layout in every network callback is costly."
+  (insert "(")
+  (cl-loop for (key value) on data by #'cddr do
+           (insert "\n ")
+           (prin1 key (current-buffer))
+           (insert " ")
+           (if (and value (memq key '(:messages :events :runs)))
+               (progn
+                 (insert "(")
+                 (dolist (record value)
+                   (insert "\n  ")
+                   (prin1 record (current-buffer)))
+                 (insert "\n )"))
+             (prin1 value (current-buffer))))
+  (insert "\n)\n"))
+
 (defun emacs-agent-store-save (session)
   "Atomically save SESSION, returning its path; leave old data intact on error."
   (let* ((data (emacs-agent-store--snapshot session))
@@ -175,7 +195,7 @@ Concatenate each block once, avoiding quadratic string accumulation."
             (let ((print-length nil) (print-level nil) (print-circle nil)
                   (print-escape-newlines t) (coding-system-for-write 'utf-8-unix))
               (insert ";; Emacs Agent session data; contains potentially sensitive history.\n")
-              (pp data (current-buffer))
+              (emacs-agent-store--print data)
               (write-region (point-min) (point-max) temporary nil 'silent)))
           (rename-file temporary file t)
           (puthash session (float-time) emacs-agent-store--last-save)

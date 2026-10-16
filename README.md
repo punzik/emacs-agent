@@ -102,6 +102,12 @@ Canonical history now supports unique input IDs within one contiguous run;
 pending UI/edit/withdraw/recovery still need implementation. See
 [ADR-0007](docs/adr/0007-steering-boundaries.md).
 
+Snapshot autosave uses fast per-record Lisp serialization, not recursive
+pretty-printing in network callbacks. Schema, immediate boundary saves, partial
+checkpoints and atomic writes are unchanged. A private ~391 KB session benchmark
+reduced full save from ~976 ms to ~14 ms; the user subsequently confirmed that
+the input stalls disappeared during the repeated live test. See [ADR-0008](docs/adr/0008-responsive-snapshots.md).
+
 ### Temporary final-answer message
 
 Successful completion echoes a short preview without opening a buffer. By
@@ -410,7 +416,7 @@ normal minibuffer hooks/keymaps; the agent does not supply a custom editor.
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 161 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 162 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh

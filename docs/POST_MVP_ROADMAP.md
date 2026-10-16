@@ -1,7 +1,8 @@
 # Emacs Agent после MVP: выводы из Pi/Pigo и план развития
 
 **Статус:** F0, F0b, F0c и ограниченный F1 реализованы; F2 начат с offline spike,
-UI steering ещё не реализован. 161 offline ERT и byte compilation с
+UI steering ещё не реализован; перед ним устранён измеренный секундный
+pretty-print autosave stall. 162 offline ERT и byte compilation с
 warnings-as-errors проходят. Для буферного редактирования F0 есть пользовательский
 live smoke и подтверждение undo; отдельный live smoke F0b ещё не выполнялся.
 Остальные post-MVP этапы не реализованы.
@@ -511,6 +512,18 @@ callbacks проверены, display failure не блокирует очере
 другая сессия и instructions view не подавляют уведомление. 157 ERT и compile
 прошли. Решения: [ADR-0006](adr/0006-final-response-echo.md).
 
+### Приоритет перед F2 UI — отзывчивость ввода
+
+По сообщению пользователя об input lag измерен synchronous autosave на
+приватной копии его журнала (~391 КБ): recursive pp занимал ~1 с, тогда как
+snapshot/validation ~6 мс. Fast per-record printer сохраняет те же schema 2
+Lisp values, атомарность, permissions и частоту checkpoints; полный save
+~976 → ~14 мс. 162 ERT и compile проходят. Renderer отдельно дал линейную
+стоимость в batch; интерактивный redisplay и другие возможные причины lag
+этим не исключены. Пользователь повторил live test и подтвердил: тормоза
+ввода исчезли.
+Решение: [ADR-0008](adr/0008-responsive-snapshots.md).
+
 ### F2 — Steering и редактируемый ожидающий ввод
 
 **Работа:**
@@ -758,7 +771,7 @@ loading. Любые новые пользовательские настройк
 7. После каждого этапа обновить README/интеграционные ограничения, зафиксировать
    проверенные факты и оставшиеся вопросы. Коммит — только по запросу пользователя.
 
-**Рекомендуемый следующий шаг:** реализация pending lifecycle/UI F2 на основе
+**Рекомендуемый следующий шаг:** pending lifecycle/UI F2 на основе
 проверенного offline seam: steering, просмотр/отзыв/редактирование и bounded
 limits, frozen inputs и recovery при cancel/error. Прототипные тесты не заменяют
 эту реализацию. Opt-in live smoke F1/F2 остаётся отдельной проверкой.

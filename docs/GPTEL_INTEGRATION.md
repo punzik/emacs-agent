@@ -567,7 +567,19 @@ See [ADR-0005](adr/0005-root-project-instructions.md).
 
 ## Post-MVP F0b: durable streaming blocks (schema 2)
 
-The current store writes **schema 2**, pretty-printed Lisp data. Schema 1 is
+The current store writes **schema 2**, readable Lisp data with one top-level
+field / message / event / run record per line. Recursive `pp` layout was removed
+from synchronous autosave: on a private ~391 KB real-session copy, full atomic
+save measured ~976 ms before and ~14 ms afterward (3 repetitions, no GC).
+Snapshot construction itself was ~6 ms. Validation, immediate boundary saves,
+5-second stream checkpoints, permissions and atomic rename remain unchanged;
+parsed values are identical. 162 ERT and warnings-as-errors compile pass,
+including a regression forbidding pretty-layout calls during save and checking
+exact serialized roundtrip. No new provider call was used for this benchmark;
+the user subsequently reran the live test and confirmed that input stalls
+disappeared. Separate renderer
+batch timings were near-linear and do not rule out real redisplay costs.
+See [ADR-0008](adr/0008-responsive-snapshots.md). Schema 1 is
 rejected; no migration or compatibility reader is provided during deep alpha.
 Use a new private `emacs-agent-data-directory` for testing without touching old
 archives. The stage-5 schema-1 observations below are historical, not a claim
