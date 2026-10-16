@@ -1,8 +1,8 @@
 # Emacs Agent после MVP: выводы из Pi/Pigo и план развития
 
-**Статус:** F0, F0b, F0c, ограниченный F1, lifecycle/UI F2 и минимальный F3 реализованы;
-live F2 smoke ещё отдельно. Устранён измеренный секундный pretty-print
-autosave stall. 196 offline ERT и byte compilation с
+**Статус:** F0, F0b, F0c, ограниченный F1, lifecycle/UI F2, минимальный F3 и F4 реализованы;
+инструментированные live F2/F4 smoke ещё отдельно. Устранён измеренный секундный pretty-print
+autosave stall. 224 offline ERT и byte compilation с
 warnings-as-errors проходят. Для буферного редактирования F0 есть пользовательский
 live smoke и подтверждение undo; отдельный live smoke F0b ещё не выполнялся.
 Остальные post-MVP этапы не реализованы.
@@ -602,28 +602,41 @@ budgets, permissions, save failure без повторных effects и отсу
 
 ### F4 — Контекстный бюджет и compaction
 
-**Работа:**
+**Реализован выбранный пользователем pigo-подход**, вместо первоначального
+manual-first/opt-in плана: [ADR-0010](adr/0010-pigo-style-compaction.md).
 
-1. Ввести явный builder model projection поверх неизменяемых original records;
-   сначала сохранить эквивалентность нынешнего wire replay.
-2. Добавить declared context window, output reserve, оценку полного запроса
-   и доступный usage. UI помечает оценки как оценки; неизвестные capabilities
-   не превращаются в выдуманное точное окно/цену.
-3. Сделать ручную compaction только в idle session: без tools, с отменой,
-   retained boundary и отдельной записью summary/provenance.
-4. Начать с консервативных границ завершённых run; split большой tool chain
-   рассматривать только при отдельной необходимости и доказанном pairing.
-5. Публиковать новую проекцию после успешной summary и persistence. При ошибке
-   оставить прежнюю проекцию; повторная compaction учитывает предыдущую summary.
-6. После ручного режима добавить opt-in automatic compaction на безопасной
-   границе перед запросом. Включение по умолчанию — отдельное решение.
-7. После summary заново проверять бюджет. Если места нет — остановка/понятная
-   ошибка, без молчаливого удаления. Summary также имеет собственный бюджет.
+1. Локальный настраиваемый budget 262144, reserve 16384, recent target 20000,
+   automatic включён по умолчанию. Это не обнаруженное физическое окно `main`.
+   Настройки заморожены при accepted input, сохранены в pending data/quota.
+2. Перед каждым provider generation, после полного tool batch: chars/4 + framing,
+   включая system/tools и preview steering. Доступный normalized usage anchor
+   даёт input+cached+output и последующий estimated delta, не точный context size.
+   Anchor сохраняется приватно; model/backend change и compaction его сбрасывают.
+3. Один summary attempt без tools → rebuild → одна budget recheck. При превышении
+   остановиться явно; успешная summary остаётся. Нет provider-overflow retry loop,
+   токенизатора, молчаливого удаления или повторного выполнения инструментов.
+4. Retention по user/assistant boundary; canonical tool record — уже атомарная
+   call/result pair, поэтому допускается split длинного run только между такими
+   парами. Retained IDs/reasoning сохранены. Recent target не гарантирует число
+   оставшихся токенов. Current-run snapshots остаются explicit под `current`.
+5. Original history/journal сохранены; модель получает latest summary + raw suffix.
+   Summary с absolute cut/provenance публикуется после complete nonblank response
+   и atomic snapshot. Repeated compaction не возвращает старый raw prefix.
+   Генерация/cancel/save failure сохраняет прежнюю projection; restart inert.
+6. `M-x emacs-agent-compact` в idle, prefix для retention (включая 0) и focus.
+   Существующий cancel/FIFO работают с session lock; arriving steering не claimed
+   до task HTTP. Auto требует autosave; manual — явная durable операция.
+7. Summary input как pigo: UTF-8-safe prefix 2000 bytes/block; total
+   min(128 KiB, context/3) bytes с first-quarter/newest-tail. Это lossy источник,
+   не гарантия сохранения всех value/error/file references. Исходные данные целы.
 
-**Готово:** regression/property-style ERT проверяют точные tool pairs/IDs и
-reasoning, repeated compaction, три context policies, restore summary,
-смену модели/usage anchor, пустую/оборванную summary, cancel и failure без
-замены старого контекста. Live smoke проверяет сохранение целей/ограничений.
+**Проверка:** 224 ERT и warnings-as-errors compile/diff-check; production private
+FSM dry-run, post-whole-batch steering/cancel без повторных effects, usage anchor,
+повторная summary, malformed checkpoints, failed save, FIFO/reentrant events,
+restore без установленного gptel в свежем `emacs -Q`. Независимый read-only review
+coordinator/integration не нашёл подтверждённых проблем. Real-provider F4 smoke
+не запускался; сохранение смысла целей/ограничений ещё требует live проверки.
+Structs изменились: нужен restart, не hot-load в pre-F4 пользовательский Emacs.
 
 ### F5 — Agent Skills и инспекция ресурсов
 
@@ -793,10 +806,10 @@ loading. Любые новые пользовательские настройк
 7. После каждого этапа обновить README/интеграционные ограничения, зафиксировать
    проверенные факты и оставшиеся вопросы. Коммит — только по запросу пользователя.
 
-**Рекомендуемый следующий шаг:** пользовательская проверка минимального F3
-на большом выводе, затем согласование scope F4. F2 пользователь проверил и
-одобрил commit; отдельной инструментированной full real-provider matrix нет.
-Новых real-model запросов при реализации F3 не было.
+**Рекомендуемый следующий шаг:** restart Emacs и пользовательская проверка F4
+через `M-x emacs-agent-compact`, затем согласование scope F5. F2 пользователь
+проверил и одобрил commit; отдельной инструментированной full real-provider
+matrix нет. При реализации F4 real-model запросов и hot-load structs не было.
 Templates по решению пользователя отложены. Отдельный benchmark экономии
 токенов F0c остаётся опциональным и требует одинакового исходника, фактической
 модели/настроек и сопоставимого cache state.

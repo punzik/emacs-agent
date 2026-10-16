@@ -19,6 +19,8 @@
 
 (declare-function emacs-agent-input-forget "emacs-agent-input" (input))
 (declare-function gptel-backend-name "gptel-request" (backend))
+(declare-function emacs-agent-compact-start "emacs-agent-compact" (source-run keep instructions &optional owner resume tokens-before))
+(declare-function emacs-agent-compact-job-state "emacs-agent-compact" (job))
 (defvar gptel--known-backends)
 
 (autoload 'emacs-agent-gptel-submit "emacs-agent-gptel")
@@ -207,6 +209,34 @@ The next queued turn may start; cancellation does not retry any tool call."
   "Continue the current session's paused run with another tool budget."
   (interactive)
   (emacs-agent-gptel-resume (emacs-agent--current-session)))
+
+;;;###autoload
+(defun emacs-agent-compact (&optional keep instructions)
+  "Summarize this idle session, retaining a recent token target KEEP.
+With a prefix argument, ask for KEEP and optional summary focus INSTRUCTIONS.
+Zero retains no raw suffix.  Original history is never deleted."
+  (interactive
+   (when current-prefix-arg
+     (list (read-number "Keep recent tokens (0 summarizes all): " emacs-agent-compaction-keep-recent)
+           (read-string "Summary focus (optional): "))))
+  (require 'emacs-agent-gptel)
+  (let* ((origin (emacs-agent-session-origin))
+         (source (plist-get origin :buffer))
+         (session (or (plist-get origin :session)
+                      (gethash (or (plist-get origin :root) 'global) emacs-agent-session--registry)
+                      (emacs-agent-store-load-session (plist-get origin :root))
+                      (user-error "No agent session here")))
+         (run (with-current-buffer source
+                (make-emacs-agent-run
+                 :session session :source-buffer source
+                 :id (plist-get (car (last (emacs-agent-session-messages session))) :run-id)
+                 :backend gptel-backend :model gptel-model
+                 :context-policy emacs-agent-context-history
+                 :context-config (emacs-agent-compaction-config))))
+         (job (emacs-agent-compact-start
+               run (or keep (plist-get (emacs-agent-run-context-config run) :keep)) instructions)))
+    (message "Compaction %s" (emacs-agent-compact-job-state job))
+    job))
 
 ;;;###autoload
 (defun emacs-agent-save ()

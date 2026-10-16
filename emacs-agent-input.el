@@ -3,6 +3,7 @@
 ;;; Code:
 (require 'emacs-agent-session)
 (require 'emacs-agent-context)
+(require 'emacs-agent-compaction)
 
 (declare-function gptel-backend-name "gptel-request" (backend))
 (defvar gptel-backend)
@@ -35,6 +36,7 @@ Includes text, context and instructions, not backend objects or credentials."
                      :model (emacs-agent-run-model run) :stream (emacs-agent-run-stream run)
                      :context-policy (emacs-agent-run-context-policy run)
                      :tool-budget (emacs-agent-run-tool-budget run)
+                     :context-config (emacs-agent-run-context-config run)
                      :instructions (emacs-agent-run-instructions run)))))
 
 (defun emacs-agent-input--fields (data allowed)
@@ -52,7 +54,7 @@ Includes text, context and instructions, not backend objects or credentials."
   (let ((run (plist-get data :run)))
     (emacs-agent-input--fields
      run '(:id :user-text :context :source :backend-name :model :stream :context-policy
-           :tool-budget :instructions))
+           :tool-budget :context-config :instructions))
     (unless (and (stringp (plist-get data :id)) (not (string-empty-p (plist-get data :id)))
                  (memq (plist-get data :kind) '(ask steer))
                  (memq (plist-get data :state) '(prepared queued withdrawn))
@@ -71,6 +73,8 @@ Includes text, context and instructions, not backend objects or credentials."
                  (natnump (plist-get run :tool-budget)))
       (error "Malformed pending input"))
     (when (plist-get run :context) (emacs-agent-context-render (plist-get run :context)))
+    (when (plist-get run :context-config)
+      (emacs-agent-compaction-config (plist-get run :context-config)))
     (when-let* ((source (plist-get run :source)))
       (emacs-agent-input--fields source '(:name :file))
       (unless (and (stringp (plist-get source :name))
@@ -104,6 +108,7 @@ Includes text, context and instructions, not backend objects or credentials."
                :model (plist-get saved :model) :stream (plist-get saved :stream)
                :context-policy (plist-get saved :context-policy)
                :tool-budget (plist-get saved :tool-budget)
+               :context-config (plist-get saved :context-config)
                :instructions (plist-get saved :instructions)))
          (input (make-emacs-agent-input
                  :id (plist-get data :id) :kind (plist-get data :kind) :state 'withdrawn
@@ -150,7 +155,8 @@ Includes text, context and instructions, not backend objects or credentials."
                 (emacs-agent-run-model run) gptel-model
                 (emacs-agent-run-stream run) emacs-agent-stream
                 (emacs-agent-run-context-policy run) emacs-agent-context-history
-                (emacs-agent-run-tool-budget run) emacs-agent-max-tool-calls))
+                (emacs-agent-run-tool-budget run) emacs-agent-max-tool-calls
+                (emacs-agent-run-context-config run) (emacs-agent-compaction-config)))
         (emacs-agent-input--check input)
         (setf (emacs-agent-run-input run) input
               (emacs-agent-session-inputs (emacs-agent-run-session run))

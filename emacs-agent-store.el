@@ -8,6 +8,7 @@
 (require 'emacs-agent-session)
 (require 'emacs-agent-usage)
 (require 'emacs-agent-input)
+(declare-function emacs-agent-compact-job-run "emacs-agent-compact" (job))
 
 (defcustom emacs-agent-auto-save t
   "Save on meaningful session events, including terminal states and tools.
@@ -63,6 +64,7 @@ Reject cycles/closures instead of hanging or printing unreadable #<...> data."
         :source (emacs-agent-store--source (emacs-agent-run-source-buffer run))
         :model (format "%s" (emacs-agent-run-model run))
         :context-policy (emacs-agent-run-context-policy run)
+        :context-config (emacs-agent-run-context-config run)
         :stream (emacs-agent-run-stream run) :tool-count (emacs-agent-run-tool-count run)
         :tool-budget (emacs-agent-run-tool-budget run)
         :usage (emacs-agent-usage-summary run)
@@ -128,7 +130,9 @@ Concatenate each block once, avoiding quadratic string accumulation."
     (error "Malformed pending run or input queue"))
   (let* ((active (emacs-agent-session-active-run session))
          (messages (emacs-agent-store--data (emacs-agent-session-messages session)))
-         (runs (append (when active (list active)) (emacs-agent-session-pending-runs session))))
+         (runs (append (when active (list active)) (emacs-agent-session-pending-runs session)
+                       (when (emacs-agent-session-compaction-job session)
+                         (list (emacs-agent-compact-job-run (emacs-agent-session-compaction-job session)))))))
     ;; Unflushed text is already visible in events; checkpoint it as one partial
     ;; API message too.  Do NOT flush/mutate the live run or emit fake callbacks.
     (when (and active (emacs-agent-run-assistant-chunks active))
@@ -147,6 +151,8 @@ Concatenate each block once, avoiding quadratic string accumulation."
                        :updated-at (emacs-agent-session-updated-at session)
                        :source (emacs-agent-store--source (emacs-agent-session-last-source-buffer session))
                        :messages messages :events (emacs-agent-session-events session)
+                       :compaction (emacs-agent-session-compaction session)
+                       :usage-anchor (emacs-agent-session-usage-anchor session)
                        :runs (mapcar #'emacs-agent-store--run runs)
                        :inputs (mapcar #'emacs-agent-input-data
                                        (emacs-agent-session-inputs session))))))
@@ -210,13 +216,37 @@ caller's print settings.  Pretty layout in every network callback is costly."
                (error "Malformed session fields"))
              (push key keys))))
 
+(defun emacs-agent-store--context (data)
+  "Validate DATA's optional summary projection and accounting anchor."
+  (let* ((count (length (plist-get data :messages)))
+         (record (plist-get data :compaction))
+         (anchor (plist-get data :usage-anchor)))
+    (when record
+      (emacs-agent-input--fields record '(:cut :summary :tokens-before :model :backend :time))
+      (unless (and (integerp (plist-get record :cut)) (< 0 (plist-get record :cut))
+                   (<= (plist-get record :cut) count)
+                   (stringp (plist-get record :summary))
+                   (not (string-empty-p (string-trim (plist-get record :summary))))
+                   (natnump (plist-get record :tokens-before))
+                   (stringp (plist-get record :model)) (stringp (plist-get record :backend))
+                   (numberp (plist-get record :time)))
+        (error "Malformed compaction projection")))
+    (when anchor
+      (emacs-agent-input--fields anchor '(:tokens :estimate :model :backend :cut :source))
+      (unless (and (eq (plist-get anchor :source) 'gptel-normalized)
+                   (integerp (plist-get anchor :tokens)) (< 0 (plist-get anchor :tokens))
+                   (integerp (plist-get anchor :estimate)) (< 0 (plist-get anchor :estimate))
+                   (stringp (plist-get anchor :model)) (stringp (plist-get anchor :backend))
+                   (eql (plist-get anchor :cut) (or (plist-get record :cut) 0)))
+        (error "Malformed context usage anchor")))))
+
 (defun emacs-agent-store--validate (data file &optional live-events)
   "Check DATA schema and identity for FILE before modifying the registry.
 LIVE-EVENTS allows raw deltas and not-yet-recomputed block states in a copied
 live list.  Durable snapshots require complete, consistent block metadata."
   (emacs-agent-store--plist data)
   (cl-loop for key in data by #'cddr do
-           (unless (memq key '(:schema :adapter :id :key :project-root :updated-at :source :messages :events :runs :inputs))
+           (unless (memq key '(:schema :adapter :id :key :project-root :updated-at :source :messages :events :runs :inputs :compaction :usage-anchor))
              (error "Unknown snapshot field")))
   (unless (eql (plist-get data :schema) emacs-agent-store--schema)
     (error "Unsupported session schema; no migration is provided, use a new data directory"))
@@ -229,6 +259,7 @@ live list.  Durable snapshots require complete, consistent block metadata."
     (error "Invalid session identity or filename"))
   (dolist (field '(:messages :events :runs :inputs))
     (unless (proper-list-p (plist-get data field)) (error "Malformed session collection")))
+  (emacs-agent-store--context data)
   (dolist (message (plist-get data :messages))
     (emacs-agent-store--plist message)
     (unless (and (memq (plist-get message :role) '(user assistant tool unsupported-protocol))
@@ -257,7 +288,9 @@ live list.  Durable snapshots require complete, consistent block metadata."
     (unless (and (stringp (plist-get run :id)) (stringp (plist-get run :user-text))
                  (memq (plist-get run :status)
                        '(queued requesting streaming tool-running paused completed failed cancelled)))
-      (error "Malformed saved run")))
+      (error "Malformed saved run"))
+    (when (plist-get run :context-config)
+      (emacs-agent-compaction-config (plist-get run :context-config))))
   (let ((run-ids (make-hash-table :test #'equal))
         (input-ids (make-hash-table :test #'equal))
         (prepared-ids (make-hash-table :test #'equal))
@@ -307,7 +340,9 @@ live list.  Durable snapshots require complete, consistent block metadata."
                          :id (plist-get data :id) :key (plist-get data :key)
                          :project-root (plist-get data :project-root)
                          :updated-at (plist-get data :updated-at)
-                         :messages (plist-get data :messages) :events (plist-get data :events)))
+                         :messages (plist-get data :messages) :events (plist-get data :events)
+                         :compaction (plist-get data :compaction)
+                         :usage-anchor (plist-get data :usage-anchor)))
                (source (plist-get data :source))
                (buffer (and (stringp (plist-get source :name)) (get-buffer (plist-get source :name)))))
           (when (and buffer (equal (buffer-local-value 'buffer-file-name buffer) (plist-get source :file)))

@@ -220,6 +220,61 @@ when the journal is reopened. No usage is injected into API history. Both
 streaming and non-streaming were checked against the available real gptel model
 using temporary source data; this is not a token-savings benchmark.
 
+### Context budget and compaction (F4)
+
+Pigo-style compaction is enabled before each model request, including after a
+complete tool batch. Defaults:
+
+```elisp
+(setq emacs-agent-context-tokens 262144
+      emacs-agent-context-reserve 16384
+      emacs-agent-compaction-keep-recent 20000
+      emacs-agent-auto-compact t)
+```
+
+These are **configured local budgets**, not discovered capabilities of the model
+or the `main` alias. Set them to suit the actual model. Reserve + retention must
+be strictly below context. Settings freeze with each accepted input.
+
+Above context minus reserve, one summary request runs without tools, then the
+normal request is rebuilt and checked once more. Failure or a still-oversized
+request stops explicitly; nothing is silently dropped and tools are never
+reexecuted to repair history. Provider context errors do not trigger a retry loop.
+The estimate uses Unicode characters/4 plus framing, calibrated by the latest
+known normalized input+cache+output and estimated delta when available. It is
+not a tokenizer, exact context measurement, or billing count.
+
+`M-x emacs-agent-compact` manually summarizes an idle session. `C-u` asks for
+retention (including **0** to summarize all) and optional focus. Existing cancel
+also cancels in-flight compaction. Queued asks wait for it. Manual compaction
+always persists before publishing; automatic compaction requires autosave so
+turning autosave off does not unexpectedly write history.
+
+Original messages, snapshots, tool pairs and the journal remain intact. Only the
+model projection changes to summary + recent suffix. Retention is a target;
+boundary adjustment can retain less. Repeated compaction includes the previous
+summary, not its old raw prefix. Retained call IDs and protocol reasoning remain
+paired. Under `current`, delivered current-run snapshots remain explicit even
+if their old text was summarized; `full` applies to retained raw history, with
+older snapshots represented by summary; nil omits snapshots.
+
+Like pigo, summary input is lossy: each block keeps a UTF-8-safe **2000-byte
+prefix**, and total transcript uses a bounded first-quarter/newest-tail layout.
+Long values/errors/file references can therefore be omitted from the summary
+input; their original journal records and any F3 files are not removed.
+Only a completed nonblank summary and successful snapshot write change the
+projection. Cancel while generating or failed saving leaves the previous
+projection. An already committed summary remains if the rebuilt request is still
+too large. Restart never resumes
+an interrupted summary automatically. Auto summary HTTP usage belongs to the
+owning run; manual summary has its own audit/usage run.
+
+**Restart Emacs after updating from pre-F4 code:** session/run structures changed;
+do not hot-load the new structs into existing sessions. 224 offline ERT and
+warnings-as-errors compilation pass; F4 has not been exercised against a real
+provider or hot-loaded into the user's Emacs. See
+[ADR-0010](docs/adr/0010-pigo-style-compaction.md).
+
 ### Reading live buffers (F0)
 
 Loading `emacs-agent` also loads three ordinary Lisp helpers, usable through
@@ -468,7 +523,7 @@ normal minibuffer hooks/keymaps; the agent does not supply a custom editor.
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 196 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 224 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh

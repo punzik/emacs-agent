@@ -14,14 +14,14 @@
 
 (cl-defstruct emacs-agent-session
   id key project-root events messages log-buffer pending-runs active-run
-  last-source-buffer updated-at inputs)
+  last-source-buffer updated-at inputs compaction compaction-job usage-anchor)
 
 (cl-defstruct emacs-agent-run
   id session user-text editor-context source-buffer source-window
   (status 'queued) request-handle transport-buffer backend model stream assistant-chunks
   (tool-count 0) tool-budget pending-tools
   (tool-call-ids (make-hash-table :test #'equal)) context-policy response-protocol
-  usage-requests usage-current instructions input)
+  usage-requests usage-current instructions input context-config)
 
 (defvar emacs-agent-session--registry (make-hash-table :test #'equal)
   "Session registry keyed by canonical project directory or `global'.")

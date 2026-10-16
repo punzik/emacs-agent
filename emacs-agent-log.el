@@ -127,7 +127,8 @@ Closing the buffer does not cancel the run."
               '(:eval (when emacs-agent-session--owner
                         (let ((run (emacs-agent-session-active-run emacs-agent-session--owner)))
                           (format " Agent: %s | queued: %d | inputs: %d"
-                                  (if run (emacs-agent-run-status run) 'idle)
+                                  (cond ((emacs-agent-session-compaction-job emacs-agent-session--owner) 'compacting)
+                                        (run (emacs-agent-run-status run)) (t 'idle))
                                   (length (emacs-agent-session-pending-runs emacs-agent-session--owner))
                                   (length (emacs-agent-session-inputs emacs-agent-session--owner))))))))
 
@@ -216,6 +217,9 @@ Do not select windows, steal focus, or force readers of old entries to scroll."
      (mapconcat (lambda (input) (emacs-agent-log--payload 'input input)) payload "\n\n"))
     ((or 'usage 'usage-total) (emacs-agent-usage-format payload))
     ('instructions (emacs-agent-resources-summary payload))
+    ('compacted (format "Context compacted (estimated %s tokens before; %s original records summarized).\n\n%s"
+                        (plist-get payload :tokens-before) (plist-get payload :cut)
+                        (plist-get payload :summary)))
     ('tool-call (format "eval_elisp %s\n%s" (plist-get payload :id)
                         (plist-get (plist-get payload :args) :expression)))
     ('tool-result (format "%s\n%s" (plist-get payload :id) (plist-get payload :result)))

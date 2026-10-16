@@ -12,7 +12,10 @@
 `current' keeps only the active user turn's snapshot, including tool
 continuations.  `full' includes every turn; nil disables automatic context.
 Policy is captured at run submission; switching it does not alter a queued
-or active turn.  Stored snapshots remain intact for future turns."
+or active turn.  Stored snapshots remain intact for future turns.
+After compaction, `full' applies to retained raw history; earlier snapshots
+are represented by the summary.  Delivered current-run snapshots remain
+explicit under `current', even if their earlier input text was summarized."
   :type '(choice (const :tag "Disabled" nil)
                  (const :tag "Current user turn only" current)
                  (const :tag "All user turns" full))

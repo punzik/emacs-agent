@@ -492,6 +492,61 @@ committed logs. The second mode inherited the first turn's history, so these
 numbers validate accounting only, not comparative mode efficiency or savings
 against Pi. A fresh same-task/model/cache-state benchmark remains optional.
 
+## Post-MVP F4: pigo-style compaction
+
+`emacs-agent-compaction.el` contains provider-independent config, estimates,
+cut planning and bounded summary input. `emacs-agent-compact.el` owns the private
+summary FSM, session lock and durable projection. Normal private WAIT checks
+before every generation, after the entire prior batch. Defaults match pigo:
+context 262144, reserve 16384, retention target 20000, auto enabled. These are
+local configured budgets, not discovered model windows (including `main`).
+
+The gate includes actual system/tool data and previews pending steering without
+claiming it. One automatic summary attempt is followed by request reconstruction
+and one budget recheck. Existing TRET→WAIT delivery still owns steering claims
+and transport-launch rollback; inputs arriving during summary are caught up.
+Canonical paired records, tool counts and side effects are never replayed.
+
+Summary uses fixed factual-continuity system text, optional bounded focus, the
+selected/frozen model/backend, nonstream public text and **no tools**. Private
+WAIT strips tool-related native parameters; private TOOL rejects dispatch.
+Transcript uses 2000-byte UTF-8-safe block prefixes and at most
+min(128 KiB, context/3) bytes, preserving first quarter + newest tail. This is
+intentionally lossy like pigo, including possible omission of long result tails.
+Accept only completed nonblank text. No output-token cap is installed by reserve.
+
+Original history remains; optional snapshot `:compaction` records an absolute
+canonical cut + summary, model/backend/time and estimated tokens before. Latest
+summary is a user-role prompt followed by raw suffix. Retained normalized tool
+records are atomic call/result pairs, preserving protocol reasoning/IDs. `current`
+keeps delivered current-run snapshots explicit across a cut; `full` includes raw
+retained snapshots, with older ones represented by summary; nil omits them.
+A new summary is atomically saved before publication; generation/cancel/save
+failure keeps the previous projection. Commit claim ends cancellability. Restart
+never resumes a summary HTTP request or queued work.
+
+`:usage-anchor` persists normalized positive input (uncached+cached) + output
+with its fallback baseline and backend/model/cut provenance. Estimates apply only
+the subsequent fallback delta; backend/model changes and compaction clear it.
+Unknown usage stays unknown. Auto summary HTTP belongs to owner-run usage;
+manual summary has its own audit run. Cumulative gptel snapshots are not run
+contributions and can reset between the task FSM and the separate summary FSM.
+Frozen `:context-config` is included in pending input data/quota and saved run
+metadata. Optional fields preserve readable schema-2 snapshots; validation still
+precedes registry mutation and offline inspection does not require gptel.
+
+`M-x emacs-agent-compact` requires idle; prefix asks retention (zero allowed) and
+focus. Existing cancellation and FIFO integrate with the lock; journal header
+shows compacting. No new advertised tool, tokenizer dependency, provider-overflow
+recovery loop, branch UI or automatic raw-history deletion. Auto compaction
+requires autosave; manual compaction explicitly persists even if autosave is off.
+
+224 offline ERT, real pinned-gptel dry-run FSM/wire tests, compilation with
+warnings-as-errors and diff-check pass. A separate read-only lifecycle review
+reported no supported findings. F4 had no real-provider smoke or user-Emacs
+hot-load; session/run structs changed, so restart before trying it. Details:
+[ADR-0010](adr/0010-pigo-style-compaction.md).
+
 ## Post-MVP F3: simple full-output files
 
 The agreed KISS implementation keeps `eval_elisp` and its plain string result.

@@ -11,6 +11,7 @@
 (require 'emacs-agent-context)
 (require 'emacs-agent-usage)
 (require 'emacs-agent-input)
+(require 'emacs-agent-compact)
 
 (defvar emacs-agent-system-prompt)
 
@@ -177,8 +178,28 @@ snapshots.  Text always remains; `full' retains every captured snapshot."
   (unless (memq policy '(nil current full)) (error "Invalid agent context policy: %s" policy))
   (emacs-agent-gptel--validate-history
    (emacs-agent-session-messages (emacs-agent-run-session run)))
-  (let (previous-context)
-    (mapcar
+  (let* ((session (emacs-agent-run-session run))
+         (original (emacs-agent-session-messages session))
+         (record (emacs-agent-session-compaction session))
+         (cut (or (plist-get record :cut) 0))
+         (summary (plist-get record :summary))
+         previous-context contexts)
+    ;; Current-run snapshots remain explicit even if its old text was summarized.
+    (when (and summary (eq policy 'current))
+      (dolist (message (cl-subseq original 0 cut))
+        (when (and (eq (plist-get message :role) 'user)
+                   (equal (plist-get message :run-id) (emacs-agent-run-id run))
+                   (plist-get message :context))
+          (unless (equal previous-context (plist-get message :context))
+            (push (emacs-agent-context-render (plist-get message :context)) contexts))
+          (setq previous-context (plist-get message :context)))))
+    (append
+     (when summary
+       (list (list 'prompt
+                   (concat "The conversation history before this point was compacted into the following summary:\n\n<summary>\n"
+                           summary "\n</summary>"
+                           (when contexts (concat "\n\n" (mapconcat #'identity (nreverse contexts) "\n\n")))))))
+     (mapcar
      (lambda (message)
        (pcase (plist-get message :role)
          ('user
@@ -197,7 +218,7 @@ snapshots.  Text always remains; `full' retains every captured snapshot."
          ('tool (cons 'tool (cl-loop for key in '(:id :name :args :result)
                                     append (list key (plist-get message key)))))
          (_ (error "Unsupported agent history record"))))
-     (emacs-agent-session-messages (emacs-agent-run-session run)))))
+     (nthcdr cut original)))))
 
 (defun emacs-agent-gptel--tool-entries (calls info)
   "Pair pending CALLS with provider IDs from INFO.
@@ -248,6 +269,7 @@ reset/cleanup support is added, so gptel can finish its own FSM safely."
     ;; Terminal ownership is claimed before assistant-end or any other hook.
     (setf (emacs-agent-run-status run) status
           (emacs-agent-run-pending-tools run) nil)
+    (emacs-agent-compact-abort-owned run)
     (let* ((pending (emacs-agent-input-for-run run))
            (converted (when (eq status 'completed)
                         (emacs-agent-input--convert-claim pending))))
@@ -366,7 +388,8 @@ This is a request-local FSM handler: gptel's global handlers are untouched."
     (emacs-agent-gptel--flush-assistant run)
     (emacs-agent-usage-end
      run (pcase (gptel-fsm-state fsm) ('ERRS 'failed) ('ABRT 'cancelled) (_ 'received))
-     (gptel-fsm-info fsm))))
+     (gptel-fsm-info fsm))
+    (emacs-agent-compact-observe run fsm)))
 
 (defun emacs-agent-gptel--steering-record (run input)
   "Return INPUT's canonical user record belonging to RUN."
@@ -377,6 +400,17 @@ This is a request-local FSM handler: gptel's global handlers are untouched."
           :context (emacs-agent-run-editor-context prepared))))
 
 (defun emacs-agent-gptel--wait (run handlers fsm)
+  "Check RUN's request budget before private WAIT HANDLERS can launch HTTP."
+  (when (and (emacs-agent-gptel--live-p run)
+             (memq (car (plist-get (gptel-fsm-info fsm) :history)) '(INIT TRET)))
+    (condition-case err
+        (unless (emacs-agent-compact-before-request run handlers fsm)
+          (emacs-agent-gptel--wait-ready run handlers fsm))
+      ((error quit)
+       (emacs-agent-gptel--finish run (if (eq (car err) 'quit) 'cancelled 'failed)
+                                 (error-message-string err))))))
+
+(defun emacs-agent-gptel--wait-ready (run handlers fsm)
   "Run private WAIT HANDLERS for RUN, delivering only after a complete batch.
 Claim wire/history/identities without event hooks between commit and transport.
 Publish one batch audit afterward; reentrant cancellation cannot launch HTTP."
@@ -405,9 +439,10 @@ Publish one batch audit afterward; reentrant cancellation cannot launch HTTP."
                                               (stringp (gethash (plist-get spec :id)
                                                                (emacs-agent-run-tool-call-ids run)))))
                                        specs)
-                             (>= (length messages) (length specs))
-                             (cl-every (lambda (m) (equal (plist-get m :role) "tool"))
-                                       (last messages (length specs))))
+                             (or (plist-get info :agent-compacted)
+                                 (and (>= (length messages) (length specs))
+                                      (cl-every (lambda (m) (equal (plist-get m :role) "tool"))
+                                                (last messages (length specs))))))
                   (error "Steering requires a complete restored tool batch"))
                 (let* ((records (mapcar (apply-partially #'emacs-agent-gptel--steering-record run) inputs))
                        (preview (copy-emacs-agent-run run))
@@ -424,6 +459,7 @@ Publish one batch audit afterward; reentrant cancellation cannot launch HTTP."
                   (dolist (input inputs) (emacs-agent-input-delivered input))
                   (setf (emacs-agent-session-messages session) proposed)
                   (plist-put info :data data))))
+            (emacs-agent-compact-check run (plist-get info :data))
             ;; Observe successful transport return before pinned post-request
             ;; hooks run.  Forward every call unchanged, including other FSMs
             ;; entered reentrantly; never install global advice or hooks.
@@ -522,6 +558,7 @@ Slot access and state names are isolated pinned-gptel contracts."
 (defun emacs-agent-gptel--start-next (session)
   "Start the head of SESSION's FIFO if it has no active run."
   (unless (or (emacs-agent-session-active-run session)
+              (emacs-agent-session-compaction-job session)
               emacs-agent-gptel--executing-tool)
     (when-let* ((run (pop (emacs-agent-session-pending-runs session))))
       (setf (emacs-agent-session-active-run session) run
@@ -532,6 +569,7 @@ Slot access and state names are isolated pinned-gptel contracts."
             (generate-new-buffer (format " *emacs-agent-transport: %s*" (emacs-agent-run-id run))))
       (when (emacs-agent-run-input run)
         (emacs-agent-input-delivered (emacs-agent-run-input run)))
+      (emacs-agent-compact-invalidate run)
       (setf (emacs-agent-session-last-source-buffer session) (emacs-agent-run-source-buffer run))
       (emacs-agent-session-record
        run 'user (emacs-agent-run-user-text run)
@@ -554,6 +592,7 @@ Slot access and state names are isolated pinned-gptel contracts."
              (list :backend (gptel-backend-name (emacs-agent-run-backend run))
                    :model (format "%s" (emacs-agent-run-model run))
                    :context-policy (emacs-agent-run-context-policy run)
+                   :context-config (emacs-agent-run-context-config run)
                    :stream (emacs-agent-run-stream run)
                    :tool-budget (emacs-agent-run-tool-budget run)))
             (when (emacs-agent-gptel--live-p run)
@@ -610,9 +649,11 @@ Each run has its own transport, callback guard, tool registry and budget."
 
 (defun emacs-agent-gptel-cancel (session)
   "Cancel SESSION's active run; the next queued run is allowed to start."
-  (if-let* ((run (emacs-agent-session-active-run session)))
+  (if (emacs-agent-compact-cancel session)
+      nil
+    (if-let* ((run (emacs-agent-session-active-run session)))
       (emacs-agent-gptel--finish run 'cancelled "Cancelled; existing Lisp effects remain")
-    (user-error "No active agent run")))
+      (user-error "No active agent run"))))
 
 (defun emacs-agent-gptel-resume (session)
   "Grant another tool budget to SESSION's paused run without a network retry."
