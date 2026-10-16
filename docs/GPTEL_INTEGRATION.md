@@ -39,7 +39,8 @@ through a mocked provider call. Existing real-gptel dry-run tests still pass.
 The helper budgets its printed plist and evaluator prefix together, shrinking
 text while retaining continuation metadata. This assumes it is the sole final
 form with no stdout; the generic evaluator is unchanged. Impossible metadata
-budgets signal errors. Full output artifacts remain F3.
+budgets signal errors. Full output artifacts were deferred at this milestone;
+the later minimal F3 behavior is documented below.
 
 Validation: 69 offline ERT tests pass; warning-as-error byte compilation passes
 on the baseline below, via `nix-shell -p gnumake --run 'make clean test compile'`.
@@ -490,6 +491,31 @@ Private snapshots/metrics were 0600 under temporary directories, not fixtures or
 committed logs. The second mode inherited the first turn's history, so these
 numbers validate accounting only, not comparative mode efficiency or savings
 against Pi. A fresh same-task/model/cache-state benchmark remains optional.
+
+## Post-MVP F3: simple full-output files
+
+The agreed KISS implementation keeps `eval_elisp` and its plain string result.
+Above `emacs-agent-eval-output-limit` (32768 characters by default), the complete
+formatted text is written once as UTF-8 to a unique 0600 `eval-*.txt` under
+`emacs-agent-data-directory/tool-output/` (new directories 0700). The model gets
+a character-safe tail plus a quoted absolute-path notice, counted in the budget;
+if the notice alone is too long it remains intact without a tail. Exact-limit
+results do not create files. Final value/error follows stdout and normally
+survives the tail; oversized values can still be cut, with full text in the file.
+
+Create/write/quit failure cleans partial files best-effort and returns an explicit
+unavailable warning, never reexecuting Lisp or advertising a full-file reference.
+No structured channels, registry, extra helper/tool, viewer, timers, quotas or
+automatic cleanup. Files stay until manually removed; normal Elisp can inspect
+ranges. Data must not be loaded as code. Result references remain ordinary strings
+in existing history; no session schema or gptel transport changes. Full text is
+still assembled in memory before saving, not streamed like pigo's Bash spool.
+The common data-directory option now lives in eval, retaining name/default/value.
+
+196 ERT and warnings-as-errors compile pass; nine new tests cover boundaries,
+Unicode/quoted paths, final value/error/nil/quit, permissions, independent files
+and failed saves without repeated effects. No new model call was used. See
+[ADR-0009](adr/0009-simple-full-tool-output.md).
 
 ## Post-MVP F2: steering and editable pending input
 

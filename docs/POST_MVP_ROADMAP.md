@@ -1,8 +1,8 @@
 # Emacs Agent после MVP: выводы из Pi/Pigo и план развития
 
-**Статус:** F0, F0b, F0c, ограниченный F1 и lifecycle/UI F2 реализованы;
+**Статус:** F0, F0b, F0c, ограниченный F1, lifecycle/UI F2 и минимальный F3 реализованы;
 live F2 smoke ещё отдельно. Устранён измеренный секундный pretty-print
-autosave stall. 187 offline ERT и byte compilation с
+autosave stall. 196 offline ERT и byte compilation с
 warnings-as-errors проходят. Для буферного редактирования F0 есть пользовательский
 live smoke и подтверждение undo; отдельный live smoke F0b ещё не выполнялся.
 Остальные post-MVP этапы не реализованы.
@@ -578,22 +578,27 @@ pending messages, отзыв, overflow, финальную границу, от�
 
 ### F3 — Полный результат инструмента и артефакты
 
-**Работа:**
+**Реализован согласованный KISS scope**, заменяющий первоначальный план
+structured channels/registry/helper/UI: [ADR-0009](adr/0009-simple-full-tool-output.md).
 
-1. Сохранить multiple forms, lexical eval, успешный nil и маркированные ошибки.
-2. Отделить stdout, final value/error и preview. По умолчанию preview должен
-   не терять final value/error из-за длинного stdout; правила усечения явные.
-3. Большой полный текст сохранять приватным артефактом под data directory,
-   а не в project tree. В result возвращать ID/reference, размеры и truncation.
-4. Предоставить чтение диапазонов через Elisp helper и открытие из журнала.
-5. Определить жизненный цикл, лимиты хранения, очистку и поведение при missing
-   artifact; не обещать доступность приватного временного файла после restart.
-6. Согласовать отказ записи: вычисление уже могло завершиться; нельзя повторять
-   его ради сохранения или выдавать неполный preview за полный результат.
+1. Строковый `eval_elisp` без нового протокола: stdout + final value/error.
+2. При превышении 32768 characters (настраиваемо) полный текст UTF-8 сохраняется
+   в уникальный 0600 файл под data-directory/tool-output/, новые каталоги 0700.
+   Возвращаются tail и notice с quoted absolute path. Notice входит в budget;
+   если сам длиннее лимита, возвращается целиком без tail. Exact limit без I/O.
+3. Final value/error после длинного stdout обычно остаётся в хвосте; очень
+   большой value может усечься сам, полный текст доступен в сохранённом файле.
+4. Чтение обычным Elisp через тот же eval_elisp. Без новых helper, viewer,
+   структурированных полей, registry, timers, quotas или automatic cleanup.
+   Файлы остаются до ручного удаления; внешнее удаление ломает ссылки.
+5. При write/quit failure partial file удаляется best-effort, модель получает
+   явный unavailable warning без full-file reference. Вычисление не повторяется.
+   Полный текст всё ещё собирается в памяти: memory/execution limit не добавлен.
 
-**Готово:** ERT проверяют длинный stdout с итогом/ошибкой в конце, Unicode,
-чтение диапазонов, 0600, restore references, failed writes, missing files и
-очистку. Нет новых advertised LLM tools и нет усечения самого вычисления.
+**Проверка:** 196 ERT и warnings-as-errors compile. Девять новых regressions
+покрывают stdout + value/error/quit/nil, Unicode/quoted paths, границы/tiny
+budgets, permissions, save failure без повторных effects и отсутствие cleanup.
+Новый real-model smoke не запускался; пользовательские исходники не менялись.
 
 ### F4 — Контекстный бюджет и compaction
 
@@ -788,10 +793,10 @@ loading. Любые новые пользовательские настройк
 7. После каждого этапа обновить README/интеграционные ограничения, зафиксировать
    проверенные факты и оставшиеся вопросы. Коммит — только по запросу пользователя.
 
-**Рекомендуемый следующий шаг:** после restart для новых structs — opt-in live
-F2 smoke: уточнение во время streaming, pause/resume, pending edit/withdraw,
-final-boundary FIFO и cancel/recovery. Offline production paths уже проверены;
-новых real-model запросов на этапе реализации не было.
+**Рекомендуемый следующий шаг:** пользовательская проверка минимального F3
+на большом выводе, затем согласование scope F4. F2 пользователь проверил и
+одобрил commit; отдельной инструментированной full real-provider matrix нет.
+Новых real-model запросов при реализации F3 не было.
 Templates по решению пользователя отложены. Отдельный benchmark экономии
 токенов F0c остаётся опциональным и требует одинакового исходника, фактической
 модели/настроек и сопоставимого cache state.

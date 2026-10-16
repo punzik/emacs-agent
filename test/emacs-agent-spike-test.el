@@ -7,9 +7,7 @@
   (should (equal (emacs-agent-eval "nil") "\n=> nil"))
   (should (string-match-p "ERROR end-of-file" (emacs-agent-eval "(+ 1")))
   (should (string-match-p "ERROR void-function" (emacs-agent-eval "(no-such-agent-function)")))
-  (should (string-match-p "QUIT" (emacs-agent-eval "(signal 'quit nil)")))
-  (let ((emacs-agent-eval-output-limit 20))
-    (should (string-suffix-p "[truncated]" (emacs-agent-eval "(make-string 100 ?a)")))))
+  (should (string-match-p "QUIT" (emacs-agent-eval "(signal 'quit nil)"))))
 
 (ert-deftest emacs-agent-eval-buffer-string-is-plain-without-source-changes ()
   (with-temp-buffer

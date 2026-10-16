@@ -263,7 +263,28 @@ Use the helper as the sole final form, without stdout: its printed plist plus
 `=>` prefix is budgeted against `emacs-agent-eval-output-limit`. If metadata
 cannot fit, the helper errors rather than returning an incomplete plist.
 Wrapping the result or printing extra output can still trigger the evaluator's
-general truncation. Full tool-output artifacts are deferred to F3.
+general truncation.
+
+### Full tool output (F3)
+
+`eval_elisp` still returns a plain string. If it exceeds
+`emacs-agent-eval-output-limit` (default 32768 characters), the full text is saved
+as UTF-8 in a unique 0600 file under `emacs-agent-data-directory/tool-output/`.
+The model receives a **tail** and a notice with the quoted absolute path. The
+notice counts toward the limit; if it alone exceeds the limit, it is returned
+intact without a tail. Exact-limit results do not create a file.
+
+This normally retains final `=> VALUE` / ERROR / QUIT after noisy stdout. A value
+that itself exceeds the tail can still be cut; the complete text is in the file.
+Use ordinary Elisp (`insert-file-contents` and buffer APIs) to inspect needed
+ranges; never load saved output as code. No new tool, helper or viewer is added.
+
+Write failure returns an explicit unavailable warning, never a partial-file
+reference, and **never repeats evaluation**. Files are private, not encrypted;
+there is no registry, automatic deletion or storage quota. Delete them manually.
+Removing/moving files can invalidate old references. Output is still collected
+in memory before saving; this is not a memory or execution limit.
+See [ADR-0009](docs/adr/0009-simple-full-tool-output.md).
 See [ADR-0001](docs/adr/0001-f0-buffer-helpers.md) for the contract.
 
 ### Editing live buffers with undo
@@ -447,7 +468,7 @@ normal minibuffer hooks/keymaps; the agent does not supply a custom editor.
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 187 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 196 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh

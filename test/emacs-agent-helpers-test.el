@@ -171,7 +171,7 @@
       (let* ((wire (emacs-agent-eval "(emacs-agent-read-lines (current-buffer) 1 3)"))
              (result (read (substring wire 4))))
         (should (<= (length wire) 900))
-        (should-not (string-match-p "\\[truncated\\]" wire))
+        (should-not (string-match-p "\\[truncated" wire))
         (should (plist-get result :truncated))
         (should (> (plist-get result :next-position) 1))
         (should (plist-get result :tick))))

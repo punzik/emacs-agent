@@ -11,17 +11,45 @@
 
 (defgroup emacs-agent nil "An agent in the live Emacs process." :group 'applications)
 
+(defcustom emacs-agent-data-directory (expand-file-name "emacs-agent/" user-emacs-directory)
+  "Directory for session snapshots and full tool-output files.
+History, reasoning and tool results can contain secrets.  Files are not
+encrypted; full output files are not automatically deleted."
+  :type 'directory :group 'emacs-agent)
+
 (defcustom emacs-agent-eval-output-limit 32768
   "Maximum characters in a tool result, including the truncation notice.
-Values below the notice length are treated as the notice length."
+Overflow returns a tail and saves full text under `emacs-agent-data-directory'.
+On overflow the notice is never cut, even when it alone exceeds this limit."
   :type 'natnum :group 'emacs-agent)
 
 (defun emacs-agent-eval--limit (text)
-  "Limit TEXT without changing the computation that produced it."
-  (let* ((notice "\n[truncated]")
-         (limit (max (length notice) emacs-agent-eval-output-limit)))
-    (if (<= (length text) limit) text
-      (concat (substring text 0 (max 0 (- limit (length notice)))) notice))))
+  "Return TEXT unchanged or a bounded tail and full-output file reference.
+Save only after evaluation; a failed write never repeats the computation.
+No registry or automatic cleanup is maintained."
+  (if (<= (length text) emacs-agent-eval-output-limit) text
+    (let* ((directory (expand-file-name "tool-output/" emacs-agent-data-directory))
+           (print-length nil) (print-level nil) (print-escape-newlines t)
+           file notice)
+      (condition-case err
+          (progn
+            (dolist (dir (list emacs-agent-data-directory directory))
+              (unless (file-directory-p dir)
+                (make-directory dir t)
+                (set-file-modes dir #o700)))
+            (setq file (make-temp-file (expand-file-name "eval-" directory) nil ".txt"))
+            (set-file-modes file #o600)
+            (with-temp-buffer
+              (insert text)
+              (let ((coding-system-for-write 'utf-8-unix))
+                (write-region (point-min) (point-max) file nil 'silent)))
+            (setq notice (format "\n[truncated; showing tail. Full output: %S]" file)))
+        ((error quit)
+         (when file (ignore-errors (delete-file file)))
+         (setq notice (format "\n[truncated; full output unavailable (evaluation already ran): %s]"
+                              (error-message-string err)))))
+      (let ((tail-length (max 0 (- emacs-agent-eval-output-limit (length notice)))))
+        (concat (substring text (max 0 (- (length text) tail-length))) notice)))))
 
 (defun emacs-agent-eval (expression)
   "Evaluate all forms in EXPRESSION, returning output and the final value.

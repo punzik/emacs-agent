@@ -48,7 +48,7 @@
                       (undo buffer-undo-list)
                       (wire (emacs-agent-eval source)))
                  (should (string-prefix-p "\n=> " wire))
-                 (should-not (string-match-p "\\[truncated\\]" wire))
+                 (should-not (string-match-p "\\[truncated" wire))
                  (let ((value (read (substring wire 4))))
                    (pcase index
                      (0 (should (integerp value)) (should (= value tick)))

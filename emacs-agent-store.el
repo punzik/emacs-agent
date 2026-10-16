@@ -9,11 +9,6 @@
 (require 'emacs-agent-usage)
 (require 'emacs-agent-input)
 
-(defcustom emacs-agent-data-directory (expand-file-name "emacs-agent/" user-emacs-directory)
-  "Directory for session snapshots, outside working projects by default.
-History, reasoning and tool results can contain secrets.
-Files are not encrypted."
-  :type 'directory :group 'emacs-agent)
 (defcustom emacs-agent-auto-save t
   "Save on meaningful session events, including terminal states and tools.
 Streaming deltas are checkpointed at most once per five seconds; terminal
