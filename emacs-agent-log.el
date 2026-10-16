@@ -12,6 +12,8 @@
 (declare-function emacs-agent-ask "emacs-agent")
 (declare-function emacs-agent-cancel "emacs-agent")
 (declare-function emacs-agent-resume "emacs-agent")
+(declare-function emacs-agent-steer "emacs-agent")
+(declare-function emacs-agent-pending "emacs-agent")
 
 (defcustom emacs-agent-show-reasoning t
   "Display supplied reasoning in newly rendered journal sections.
@@ -108,6 +110,8 @@ Notification failures cannot strand a completed run or its FIFO."
     (define-key map (kbd "TAB") #'emacs-agent-log-toggle-section)
     (define-key map (kbd "g") #'emacs-agent-log-refresh)
     (define-key map (kbd "a") #'emacs-agent-ask)
+    (define-key map (kbd "C-c C-s") #'emacs-agent-steer)
+    (define-key map (kbd "C-c C-p") #'emacs-agent-pending)
     (define-key map (kbd "C-c C-k") #'emacs-agent-cancel)
     (define-key map (kbd "C-c C-c") #'emacs-agent-resume)
     map)
@@ -122,9 +126,10 @@ Closing the buffer does not cancel the run."
   (setq-local header-line-format
               '(:eval (when emacs-agent-session--owner
                         (let ((run (emacs-agent-session-active-run emacs-agent-session--owner)))
-                          (format " Agent: %s | queued: %d"
+                          (format " Agent: %s | queued: %d | inputs: %d"
                                   (if run (emacs-agent-run-status run) 'idle)
-                                  (length (emacs-agent-session-pending-runs emacs-agent-session--owner))))))))
+                                  (length (emacs-agent-session-pending-runs emacs-agent-session--owner))
+                                  (length (emacs-agent-session-inputs emacs-agent-session--owner))))))))
 
 (defun emacs-agent--session-name (session)
   "Return a readable collision-resistant name for SESSION."
@@ -204,6 +209,11 @@ Do not select windows, steal focus, or force readers of old entries to scroll."
   "Return display text for TYPE and PAYLOAD, never evaluating their contents."
   (pcase type
     ('queued "Waiting in session FIFO")
+    ('input (format "%s: %s (%s)\n%s"
+                    (plist-get payload :id) (plist-get payload :state) (plist-get payload :kind)
+                    (plist-get (plist-get payload :run) :user-text)))
+    ((or 'steering 'input-recovery)
+     (mapconcat (lambda (input) (emacs-agent-log--payload 'input input)) payload "\n\n"))
     ((or 'usage 'usage-total) (emacs-agent-usage-format payload))
     ('instructions (emacs-agent-resources-summary payload))
     ('tool-call (format "eval_elisp %s\n%s" (plist-get payload :id)

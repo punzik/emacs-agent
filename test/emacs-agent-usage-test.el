@@ -12,7 +12,8 @@
             (list :buffer (emacs-agent-run-transport-buffer run)
                   :backend (emacs-agent-run-backend run)
                   :callback (apply-partially #'emacs-agent-gptel--callback run))))
-    (funcall (car (alist-get 'WAIT (gptel-fsm-handlers fsm))) fsm)
+    ;; WAIT now wraps the transport as well; isolate accounting here.
+    (emacs-agent-gptel--usage-begin run fsm)
     (gptel-fsm-info fsm)))
 
 (defun emacs-agent-usage-test--events (run type)

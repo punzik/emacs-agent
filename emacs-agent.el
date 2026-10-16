@@ -14,7 +14,12 @@
 (require 'emacs-agent-helpers)
 (require 'emacs-agent-log)
 (require 'emacs-agent-store)
+(require 'emacs-agent-input)
 (require 'tabulated-list)
+
+(declare-function emacs-agent-input-forget "emacs-agent-input" (input))
+(declare-function gptel-backend-name "gptel-request" (backend))
+(defvar gptel--known-backends)
 
 (autoload 'emacs-agent-gptel-submit "emacs-agent-gptel")
 (autoload 'emacs-agent-gptel-cancel "emacs-agent-gptel")
@@ -116,6 +121,28 @@ Starts a gptel run immediately if this session is idle; otherwise queues it."
         (message "Agent turn %s in %s" (emacs-agent-run-status run)
                  (emacs-agent--session-name session))
         run))))
+
+;;;###autoload
+(defun emacs-agent-steer ()
+  "Capture context and queue a clarification for the current active run.
+Paused runs accept clarifications too.  RET sends, C-j inserts a newline;
+blank input and C-g leave the run unchanged."
+  (interactive)
+  (let* ((session (emacs-agent--current-session))
+         (target (emacs-agent-session-active-run session)))
+    (unless (and target (memq (emacs-agent-run-status target)
+                              '(requesting streaming tool-running paused)))
+      (user-error "No active agent run here"))
+    (let* ((origin (emacs-agent-session-origin))
+           (source (plist-get origin :buffer))
+           (context (with-current-buffer source
+                      (emacs-agent-context-capture (plist-get origin :root))))
+           (text (save-current-buffer
+                   (read-from-minibuffer "Steer: " nil emacs-agent-minibuffer-map
+                                         nil 'emacs-agent-prompt-history))))
+      (unless (string-empty-p (string-trim text))
+        (emacs-agent-input-queue-steer target text context source
+                                       (plist-get origin :window))))))
 
 ;;;###autoload
 (defun emacs-agent-show-instructions ()
@@ -239,6 +266,178 @@ Does not stop or resume any run.  Snapshots may contain secrets."
       (emacs-agent-session-list--entries)
       (tabulated-list-print t))
     (display-buffer buffer)))
+
+(defvar emacs-agent-pending-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map tabulated-list-mode-map)
+    (define-key map (kbd "g") #'emacs-agent-pending-refresh)
+    (define-key map (kbd "e") #'emacs-agent-pending-edit)
+    (define-key map (kbd "d") #'emacs-agent-pending-withdraw)
+    (define-key map (kbd "r") #'emacs-agent-pending-recover)
+    (define-key map (kbd "D") #'emacs-agent-pending-forget)
+    (define-key map (kbd "RET") #'emacs-agent-pending-show)
+    map))
+
+(define-derived-mode emacs-agent-pending-mode tabulated-list-mode "Agent-Pending"
+  "Undelivered inputs: e edit, d withdraw, r recover, D forget, RET full text."
+  (setq tabulated-list-format [("State" 12 t) ("Kind" 8 t) ("Text" 50 t) ("ID" 24 t)]
+        tabulated-list-padding 2)
+  (add-hook 'tabulated-list-revert-hook #'emacs-agent-pending--entries nil t)
+  (tabulated-list-init-header))
+
+(defun emacs-agent-pending--entries ()
+  "Populate rows from this view's owning session only."
+  (setq tabulated-list-entries
+        (cl-loop for input in (emacs-agent-session-inputs emacs-agent-session--owner)
+                 when (and (memq (emacs-agent-input-state input) '(prepared queued withdrawn))
+                           (memq (emacs-agent-input-kind input) '(ask steer)))
+                 collect
+                 (list (emacs-agent-input-id input)
+                       (vector (symbol-name (emacs-agent-input-state input))
+                               (symbol-name (emacs-agent-input-kind input))
+                               (car (split-string (emacs-agent-run-user-text
+                                                   (emacs-agent-input-run input)) "\n"))
+                               (emacs-agent-input-id input))))))
+
+(defun emacs-agent-pending-refresh ()
+  "Refresh this pending view without changing windows or scheduling work."
+  (interactive)
+  (when (derived-mode-p 'emacs-agent-pending-mode)
+    (emacs-agent-pending--entries)
+    (tabulated-list-print t)))
+
+(defun emacs-agent-pending--refresh-event (session event)
+  "Refresh an existing SESSION pending view only for lifecycle EVENT changes."
+  (unless (memq (plist-get event :type) '(assistant reasoning assistant-end reasoning-end))
+    (when-let* ((buffer (get-buffer (format "*emacs-agent-pending: %s*"
+                                           (emacs-agent-session-id session)))))
+      (with-current-buffer buffer
+        (when (eq emacs-agent-session--owner session) (emacs-agent-pending-refresh))))))
+
+(add-hook 'emacs-agent-session-event-functions #'emacs-agent-pending--refresh-event)
+
+(defun emacs-agent-pending--selected (input)
+  "Return INPUT or the input on the current pending row."
+  (or input
+      (and (derived-mode-p 'emacs-agent-pending-mode)
+           (cl-find (tabulated-list-get-id)
+                    (emacs-agent-session-inputs emacs-agent-session--owner)
+                    :key #'emacs-agent-input-id :test #'equal))
+      (user-error "Select a pending input row first")))
+
+(defun emacs-agent-pending--working-buffer-p (buffer)
+  "Whether BUFFER is a live working buffer, not an agent view or minibuffer."
+  (when (consp buffer) (setq buffer (car buffer)))
+  (when (stringp buffer) (setq buffer (get-buffer buffer)))
+  (and (buffer-live-p buffer) (not (minibufferp buffer))
+       (not (buffer-local-value 'emacs-agent-session--owner buffer))))
+
+(defun emacs-agent-pending--rebind (input)
+  "Explicitly rebind missing source/backend for INPUT; never recapture snapshots."
+  (require 'emacs-agent-gptel)
+  (let* ((run (emacs-agent-input-run input))
+         (source (emacs-agent-run-source-buffer run))
+         (backend (emacs-agent-run-backend run))
+         changed)
+    (unless (emacs-agent-pending--working-buffer-p source)
+      (setq source (get-buffer (read-buffer "Recovery source buffer: " nil t
+                                            #'emacs-agent-pending--working-buffer-p)))
+      (unless (emacs-agent-pending--working-buffer-p source)
+        (user-error "Choose a live working buffer, not an agent view or minibuffer"))
+      (push "source" changed))
+    (unless backend
+      (setq backend (cdr (assoc (emacs-agent-input-backend-name input) gptel--known-backends)))
+      (unless backend
+        (setq backend
+              (cdr (assoc (completing-read "Recovery backend: " gptel--known-backends nil t)
+                          gptel--known-backends))))
+      (unless backend (user-error "No configured backend selected"))
+      (push "backend configuration" changed))
+    (setf (emacs-agent-run-source-buffer run) source
+          (emacs-agent-run-backend run) backend)
+    (when (member "source" changed)
+      (setf (emacs-agent-run-source-window run) (get-buffer-window source t)
+            (emacs-agent-input-source input)
+            (list :name (buffer-name source)
+                  :file (buffer-local-value 'buffer-file-name source))))
+    (when (member "backend configuration" changed)
+      (setf (emacs-agent-input-backend-name input) (gptel-backend-name backend)))
+    (when changed
+      (message "Rebound %s; original context, instructions and model settings retained (not reread)"
+               (mapconcat #'identity (nreverse changed) " and ")))))
+
+(defun emacs-agent-pending-edit (&optional input)
+  "Withdraw INPUT before editing; C-g leaves it withdrawn with its original text."
+  (interactive)
+  (setq input (emacs-agent-pending--selected input))
+  (emacs-agent-input-withdraw input)
+  (unwind-protect
+      (let ((text (save-current-buffer
+                    (read-from-minibuffer
+                     "Edit pending: " (emacs-agent-run-user-text (emacs-agent-input-run input))
+                     emacs-agent-minibuffer-map nil 'emacs-agent-prompt-history))))
+        (unless (string-empty-p (string-trim text))
+          (emacs-agent-pending--rebind input)
+          (emacs-agent-input-resubmit input text)))
+    (emacs-agent-pending-refresh)))
+
+(defun emacs-agent-pending-withdraw (&optional input)
+  "Withdraw INPUT from automatic delivery, retaining it for recovery."
+  (interactive)
+  (emacs-agent-input-withdraw (emacs-agent-pending--selected input))
+  (emacs-agent-pending-refresh))
+
+(defun emacs-agent-pending-recover (&optional input)
+  "Explicitly resubmit withdrawn INPUT using its original snapshots.
+Stopped/restarted steering becomes a new ask.
+Still-live steering stays steering."
+  (interactive)
+  (setq input (emacs-agent-pending--selected input))
+  (unless (eq (emacs-agent-input-state input) 'withdrawn)
+    (user-error "Withdraw this input before recovery"))
+  (emacs-agent-pending--rebind input)
+  (emacs-agent-input-resubmit input (emacs-agent-run-user-text (emacs-agent-input-run input)))
+  (emacs-agent-pending-refresh))
+
+(defun emacs-agent-pending-forget (&optional input)
+  "Forget a withdrawn INPUT after confirmation, retaining its audit history."
+  (interactive)
+  (setq input (emacs-agent-pending--selected input))
+  (unless (eq (emacs-agent-input-state input) 'withdrawn)
+    (user-error "Withdraw this input before forgetting it"))
+  (when (yes-or-no-p (format "Forget input %s? " (emacs-agent-input-id input)))
+    (emacs-agent-input-forget input)
+    (emacs-agent-pending-refresh)))
+
+(defun emacs-agent-pending-show (&optional input)
+  "Show INPUT's full, untruncated user text, without dumping API data."
+  (interactive)
+  (setq input (emacs-agent-pending--selected input))
+  (let* ((session (emacs-agent-run-session (emacs-agent-input-run input)))
+         (buffer (get-buffer-create (format "*emacs-agent-input: %s*" (emacs-agent-input-id input)))))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert (emacs-agent-run-user-text (emacs-agent-input-run input)))
+        (goto-char (point-min)))
+      (special-mode)
+      (setq-local emacs-agent-session--owner session))
+    (display-buffer buffer)
+    buffer))
+
+;;;###autoload
+(defun emacs-agent-pending ()
+  "Show the existing session's undelivered and withdrawn ask/steer inputs."
+  (interactive)
+  (let* ((session (emacs-agent--current-session))
+         (buffer (get-buffer-create
+                  (format "*emacs-agent-pending: %s*" (emacs-agent-session-id session)))))
+    (with-current-buffer buffer
+      (emacs-agent-pending-mode)
+      (setq-local emacs-agent-session--owner session)
+      (emacs-agent-pending-refresh))
+    (display-buffer buffer)
+    buffer))
 
 (provide 'emacs-agent)
 ;;; emacs-agent.el ends here

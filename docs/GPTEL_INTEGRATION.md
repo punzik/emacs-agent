@@ -491,7 +491,7 @@ committed logs. The second mode inherited the first turn's history, so these
 numbers validate accounting only, not comparative mode efficiency or savings
 against Pi. A fresh same-task/model/cache-state benchmark remains optional.
 
-## Post-MVP F2: offline steering seam (not a user feature yet)
+## Post-MVP F2: steering and editable pending input
 
 User-approved context semantics: `current` retains original plus delivered
 steering snapshots of the active run, eliding only adjacent whole-snapshot
@@ -501,14 +501,24 @@ undelivered clarification becomes a separate ordinary FIFO run, not another
 HTTP request in the completed run. Cancel/error remains explicit recovery,
 not automatic resubmission. See [ADR-0007](adr/0007-steering-boundaries.md).
 
-The spike uses real pinned non-streaming response parsing and TOOL→TRET→WAIT,
-with only HTTP mocked. A private test handler runs after protocol restoration
-and before `gptel--handle-wait`: both tool results already exist. With budget=1,
-no steering/HTTP occurs until the second tool resumes and completes. Tests
-exercise nil/current/full, A→A→B→A, unchanged execution source/context, subsequent
-independent runs and global handler isolation. A test DONE handler enqueues a
-new run; an already queued ordinary ask runs first, and duplicate terminal
-handling cannot enqueue the same pending text again.
+Production private WAIT now wraps the pinned default handler, after complete
+protocol restoration. Only TRET with all batch results can claim queued steering;
+initial/repeated WAIT cannot deliver it. Canonical history, copied wire and input
+identities commit without event hooks before transport invocation. Launch failures
+restore undelivered recovery, whereas errors from post-request hooks after a
+successful launch preserve delivered history. Temporary forwarding bindings
+observe curl/url return for the exact FSM and delegate other FSMs unchanged;
+no global advice/handlers/hooks are installed. This is a launch boundary, not
+provider acknowledgement. Usage stays one observation per HTTP, not per input.
+Tests parse actual pinned SSE and non-streaming fixtures with only HTTP mocked.
+Budget=1 pauses before the second tool and preserves input until batch completion.
+
+Terminal status and the whole pending disposition are claimed before assistant-end
+or any other event hook. Successful final conversion appends frozen independent
+runs behind older asks, before publishing hooks, so new reentrant submissions
+cannot overtake existing clarifications. Repeated DONE cannot convert twice.
+Tool-call hooks are followed by a liveness check before evaluation; effects of
+already-started self-cancelling Lisp still retain their result.
 
 The old canonical validator rejected every second user record of a run. It now
 permits additional user inputs only with a nonempty unique `:input-id`, within
@@ -519,12 +529,24 @@ region/text/narrowing changes count even at the same point; raw history is
 unchanged and full retains every snapshot. gptel may merge adjacent user wire
 messages, so assertions count context blocks, not just message objects.
 
-161 ERT and warnings-as-errors compile pass. No new model calls occurred.
-Production WAIT/DONE do **not** yet install the prototype steering handlers;
-commands, pending lifecycle/limits, edit/withdraw, durable recovery and complete
-prepared-input freezing (including resources/config on final conversion) remain
-F2 implementation work. These seam tests do not claim streaming input-delivery
-UI or the entire F2 stage is ready.
+`emacs-agent-steer` targets the captured active run, including paused runs;
+initially idle is an error. Pending view includes ordinary queued asks and
+steering, with edit/withdraw/explicit recovery/confirmed forget/full-text commands.
+Editing withdraws before recursive minibuffer input: C-g retains the original;
+RET resubmits at the tail with the same snapshots. Default limits are 8
+undelivered entries (withdrawn included), 256 KiB UTF-8 serialized frozen payload.
+Overflow never evicts older input. Credentials/backend objects are not persisted.
+Optional schema-2 :inputs restores only withdrawn recovery, never transports or
+execution queues; missing live source/backend must be explicitly rebound.
+Independent ordinary queued asks retain their existing cancellation/FIFO policy.
+
+187 ERT and warnings-as-errors compile pass. Independent review's three reproduced
+races now have regressions (assistant-end FIFO ownership, tool-call cancellation,
+post-launch-hook rollback). No new provider call or live interactive F2 smoke
+occurred. New structs have not been hot-loaded into the user's pre-F2 Emacs;
+restart before using the new state definitions. Existing schema-2 snapshots read
+without migration. Fast autosave retained ~15 ms on the prior ~391 KB private
+sample (5 full atomic saves, no GC); the synchronous pretty-print fix remains.
 
 ## Post-MVP F1: project-root instructions
 

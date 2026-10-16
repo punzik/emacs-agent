@@ -14,14 +14,14 @@
 
 (cl-defstruct emacs-agent-session
   id key project-root events messages log-buffer pending-runs active-run
-  last-source-buffer updated-at)
+  last-source-buffer updated-at inputs)
 
 (cl-defstruct emacs-agent-run
   id session user-text editor-context source-buffer source-window
   (status 'queued) request-handle transport-buffer backend model stream assistant-chunks
   (tool-count 0) tool-budget pending-tools
   (tool-call-ids (make-hash-table :test #'equal)) context-policy response-protocol
-  usage-requests usage-current instructions)
+  usage-requests usage-current instructions input)
 
 (defvar emacs-agent-session--registry (make-hash-table :test #'equal)
   "Session registry keyed by canonical project directory or `global'.")
@@ -71,17 +71,20 @@ This function does not create a session."
           :root (if owner (emacs-agent-session-project-root owner)
                   (with-current-buffer source (emacs-agent-session-resolve-root))))))
 
+(defun emacs-agent-session-prepare (session text context source window)
+  "Prepare TEXT, CONTEXT, SOURCE and WINDOW without scheduling execution."
+  (make-emacs-agent-run
+   :id (format "run-%d" (cl-incf emacs-agent-session--counter))
+   :session session :user-text text :editor-context context
+   :source-buffer source :source-window window
+   :instructions
+   (with-current-buffer (if (buffer-live-p source) source (current-buffer))
+     (emacs-agent-resources-capture (emacs-agent-session-project-root session)))))
+
 (defun emacs-agent-session-enqueue (session text context source window)
-  "Queue TEXT and captured CONTEXT in SESSION with SOURCE and WINDOW.
-Capture saved project instructions and source opt-out now.  The adapter
-consumes the FIFO without recapturing editor context or instructions."
-  (let ((run (make-emacs-agent-run
-              :id (format "run-%d" (cl-incf emacs-agent-session--counter))
-              :session session :user-text text :editor-context context
-              :source-buffer source :source-window window
-              :instructions
-              (with-current-buffer (if (buffer-live-p source) source (current-buffer))
-                (emacs-agent-resources-capture (emacs-agent-session-project-root session))))))
+  "Queue TEXT with frozen CONTEXT and saved instructions in SESSION.
+SOURCE and WINDOW identify its original editor location."
+  (let ((run (emacs-agent-session-prepare session text context source window)))
     (setf (emacs-agent-session-last-source-buffer session) source
           (emacs-agent-session-updated-at session) (float-time)
           (emacs-agent-session-pending-runs session)

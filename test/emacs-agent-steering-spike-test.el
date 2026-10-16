@@ -1,4 +1,4 @@
-;;; emacs-agent-steering-spike-test.el --- F2 seam proof, not steering UI -*- lexical-binding: t; -*-
+;;; emacs-agent-steering-spike-test.el --- F2 protocol seam regressions -*- lexical-binding: t; -*-
 (require 'ert)
 (require 'emacs-agent-gptel)
 ;; Adapter/history fixtures load first.  All HTTP is mocked.  The temporary
@@ -40,40 +40,15 @@
                  (initial (copy-tree (emacs-agent-run-editor-context run)))
                  (fsm (emacs-agent-f2-spike--dry-fsm run))
                  (info (gptel-fsm-info fsm))
-                 (wait (alist-get 'WAIT (gptel-fsm-handlers fsm)))
-                 pending delivered wire)
+                 pending wire)
             ;; A -> A -> B -> A: only the adjacent duplicate A may be elided.
-            (push (list :text "steer-same-A" :context (copy-tree initial)) pending)
+            (push (emacs-agent-input-queue-steer run "steer-same-A" (copy-tree initial) source nil) pending)
             (goto-char 3)
-            (push (list :text "steer-B" :context (emacs-agent-context-capture nil)) pending)
+            (push (emacs-agent-input-queue-steer run "steer-B" (emacs-agent-context-capture nil) source nil) pending)
             (goto-char 1)
-            (push (list :text "steer-A" :context (emacs-agent-context-capture nil)) pending)
+            (push (emacs-agent-input-queue-steer run "steer-A" (emacs-agent-context-capture nil) source nil) pending)
             (setq pending (nreverse pending))
-            (should (eq (car (last wait)) 'gptel--handle-wait))
-            (setf (alist-get 'WAIT (gptel-fsm-handlers fsm))
-                  (append
-                   (butlast wait)
-                   (list
-                    (lambda (state)
-                      (let* ((data (plist-get (gptel-fsm-info state) :data))
-                             (messages (append (plist-get data :messages) nil)))
-                        (should (equal (reverse emacs-agent-f2-spike-effects) '(first second)))
-                        (should (equal (mapcar (lambda (m) (plist-get m :role)) (last messages 2))
-                                       '("tool" "tool")))
-                        (while pending
-                          (let* ((input (pop pending))
-                                 (text (plist-get input :text)))
-                            (emacs-agent-session-record
-                             run 'steering-spike text
-                             (list :role 'user :run-id (emacs-agent-run-id run)
-                                   :input-id (concat "f2-" text) :text text
-                                   :context (plist-get input :context)))
-                            (gptel--inject-prompt
-                             (emacs-agent-run-backend run) data
-                             (list :role "user"
-                                   :content (cadr (car (last (emacs-agent-gptel--history run))))))
-                            (push text delivered))))))
-                   (last wait)))
+            ;; The production private WAIT wrapper owns delivery now.
             (gptel--parse-response
              (emacs-agent-run-backend run)
              '(:choices [(:message
@@ -92,13 +67,14 @@
                   (should (equal emacs-agent-f2-spike-effects '(first)))
                   (should (= (length pending) 3))
                   (should-not wire)
-                  (should-not delivered)
+                  (should (cl-every (lambda (i) (eq (emacs-agent-input-state i) 'queued)) pending))
                   (emacs-agent-gptel-resume (emacs-agent-run-session run)))))
             (when-let* ((failed (cl-find-if (lambda (e) (eq (plist-get e :type) 'failed))
                                             (emacs-agent-session-events (emacs-agent-run-session run)))))
               (ert-fail (plist-get failed :payload)))
-            (should (equal (nreverse delivered) '("steer-same-A" "steer-B" "steer-A")))
-            (should-not pending)
+            (should (equal (reverse emacs-agent-f2-spike-effects) '(first second)))
+            (should (cl-every (lambda (i) (eq (emacs-agent-input-state i) 'delivered)) pending))
+            (should-not (emacs-agent-session-inputs (emacs-agent-run-session run)))
             (should (= (emacs-agent-run-tool-count run) 2))
             (should (eq (emacs-agent-run-source-buffer run) source))
             (should (equal initial (emacs-agent-run-editor-context run)))

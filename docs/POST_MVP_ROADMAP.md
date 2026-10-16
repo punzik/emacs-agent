@@ -1,8 +1,8 @@
 # Emacs Agent после MVP: выводы из Pi/Pigo и план развития
 
-**Статус:** F0, F0b, F0c и ограниченный F1 реализованы; F2 начат с offline spike,
-UI steering ещё не реализован; перед ним устранён измеренный секундный
-pretty-print autosave stall. 162 offline ERT и byte compilation с
+**Статус:** F0, F0b, F0c, ограниченный F1 и lifecycle/UI F2 реализованы;
+live F2 smoke ещё отдельно. Устранён измеренный секундный pretty-print
+autosave stall. 187 offline ERT и byte compilation с
 warnings-as-errors проходят. Для буферного редактирования F0 есть пользовательский
 live smoke и подтверждение undo; отдельный live smoke F0b ещё не выполнялся.
 Остальные post-MVP этапы не реализованы.
@@ -526,6 +526,11 @@ Lisp values, атомарность, permissions и частоту checkpoints; 
 
 ### F2 — Steering и редактируемый ожидающий ввод
 
+**Статус:** production lifecycle, FSM seam, команды и durable recovery реализованы.
+187 ERT и warnings-as-errors compile; новый real-model/interactive F2 smoke
+ещё не выполнялся. Hot reload старых in-memory struct instances не делался:
+для применения в уже работающем pre-F2 Emacs нужен restart.
+
 **Работа:**
 
 1. **Offline spike выполнен:** pinned TOOL→TRET→WAIT допускает доставку после
@@ -537,10 +542,14 @@ Lisp values, атомарность, permissions и частоту checkpoints; 
    `current` проецирует все snapshots run, dedup только соседних equal; raw
    history не меняется. Actual dry-run сохраняет все contexts даже при
    объединении gptel соседних user messages. 161 ERT и compile проходят.
-   Прототипные delivery handlers существуют только в тесте; это не готовый UI.
-2. Добавить явную команду steering, сохранив существующую семантику `ask`/FIFO.
-3. Разделить prepared, queued, delivered и withdrawn inputs. Ограничить объём
-   и число записей; показать pending state, предоставить отзыв для редактирования.
+   Этот spike стал основой production private WAIT wrapper.
+2. **Реализовано:** `emacs-agent-steer`, без изменения `ask`/FIFO; journal
+   C-c C-s steering и C-c C-p pending view.
+3. **Реализовано:** prepared/queued/delivered/withdrawn inputs в отдельном
+   ledger; editable pending view обычных ask и steering. Defaults: 8 записей,
+   256 КиБ UTF-8 frozen payload, overflow без вытеснения. Edit отзывает до
+   minibuffer; C-g сохраняет withdrawn, RET возвращает в конец со старыми
+   snapshots. Forget с подтверждением освобождает quota, audit остаётся.
 4. **Согласовано:** снимок steering — по месту ввода. `current` сохраняет
    исходный снимок и все доставленные snapshots этого run до завершения;
    соседние полностью равные snapshots не дублируются в wire, текст уточнения
@@ -551,9 +560,17 @@ Lisp values, атомарность, permissions и частоту checkpoints; 
    **Согласовано:** на final boundary недоставленное уточнение становится новым
    запросом обычного FIFO той же сессии, не продолжением завершённого run.
    Решения: [ADR-0007](adr/0007-steering-boundaries.md).
-6. При cancel/error возвращать недоставленный текст для явного повторного
-   использования, не запускать его автоматически. Не включать его в delivered
-   model history; durable audit может отдельно сохранять pending input.
+6. **Реализовано:** cancel/error переводят undelivered steering в recovery;
+   restart восстанавливает только withdrawn, без очереди, transport и секретов.
+   Явный resubmit остановленного input — новый ask; source/backend проверяются,
+   context/instructions/config не переснимаются. Optional schema-2 :inputs
+   сохраняется через restore-save-restore, fast printer не меняет cadence.
+7. Независимый review нашёл три races: reentrant assistant-end orphaned FIFO,
+   отмена в tool-call ещё запускала eval, post-launch hook error ошибочно
+   возвращал уже отправленный steering в recovery. Все исправлены отдельными
+   regression ERT. Terminal disposition всей batch claimed до hooks; tool eval
+   проверяет live ownership после tool-call; rollback только до launch.
+   Контроль прежнего ~391 КБ sample: full atomic save ~15 мс, 5 повторов без GC.
 
 **Готово:** mock FSM проверяет порядок двух инструментов и steering, несколько
 pending messages, отзыв, overflow, финальную границу, отмену, late callbacks и
@@ -771,10 +788,10 @@ loading. Любые новые пользовательские настройк
 7. После каждого этапа обновить README/интеграционные ограничения, зафиксировать
    проверенные факты и оставшиеся вопросы. Коммит — только по запросу пользователя.
 
-**Рекомендуемый следующий шаг:** pending lifecycle/UI F2 на основе
-проверенного offline seam: steering, просмотр/отзыв/редактирование и bounded
-limits, frozen inputs и recovery при cancel/error. Прототипные тесты не заменяют
-эту реализацию. Opt-in live smoke F1/F2 остаётся отдельной проверкой.
+**Рекомендуемый следующий шаг:** после restart для новых structs — opt-in live
+F2 smoke: уточнение во время streaming, pause/resume, pending edit/withdraw,
+final-boundary FIFO и cancel/recovery. Offline production paths уже проверены;
+новых real-model запросов на этапе реализации не было.
 Templates по решению пользователя отложены. Отдельный benchmark экономии
 токенов F0c остаётся опциональным и требует одинакового исходника, фактической
 модели/настроек и сопоставимого cache state.

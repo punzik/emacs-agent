@@ -10,6 +10,7 @@
 (require 'emacs-agent-session)
 (require 'emacs-agent-context)
 (require 'emacs-agent-usage)
+(require 'emacs-agent-input)
 
 (defvar emacs-agent-system-prompt)
 
@@ -244,9 +245,20 @@ Streaming deltas are display events; replay uses one complete logical message."
 Previously executed Lisp is never undone.  Transport buffers remain until
 reset/cleanup support is added, so gptel can finish its own FSM safely."
   (when (emacs-agent-gptel--live-p run)
-    (emacs-agent-gptel--flush-assistant run)
+    ;; Terminal ownership is claimed before assistant-end or any other hook.
     (setf (emacs-agent-run-status run) status
           (emacs-agent-run-pending-tools run) nil)
+    (let* ((pending (emacs-agent-input-for-run run))
+           (converted (when (eq status 'completed)
+                        (emacs-agent-input--convert-claim pending))))
+      (unless (eq status 'completed)
+        (dolist (input pending)
+          (setf (emacs-agent-input-state input) 'withdrawn
+                (emacs-agent-input-reason input) status)))
+      (emacs-agent-gptel--flush-assistant run)
+      (emacs-agent-input--publish-converted converted)
+      (when (and pending (not (eq status 'completed)))
+        (emacs-agent-session-record run 'input-recovery (mapcar #'emacs-agent-input-data pending))))
     ;; A stream parser can update usage on [DONE] without delivering a text
     ;; callback.  Capture FSM info before abort/terminal guards discard it.
     (emacs-agent-usage-end
@@ -263,32 +275,35 @@ reset/cleanup support is added, so gptel can finish its own FSM safely."
         (condition-case err
             (gptel-abort (emacs-agent-run-transport-buffer run))
           ((error quit) (message "Emacs Agent abort: %s" (error-message-string err)))))
-      (setf (emacs-agent-session-active-run session) nil)
-      (emacs-agent-gptel--start-next session))))
+      (when (eq (emacs-agent-session-active-run session) run)
+        (setf (emacs-agent-session-active-run session) nil)
+        (emacs-agent-gptel--start-next session)))))
 
 (defun emacs-agent-gptel--execute (run entry)
   "Execute one claimed ENTRY for RUN, then deliver its result exactly once."
   (pcase-let ((`(,id ,tool ,args ,continuation) entry))
     (unless (equal (gptel-tool-name tool) "eval_elisp")
       (error "Unexpected tool: %s" (gptel-tool-name tool)))
-    (cl-incf (emacs-agent-run-tool-count run))
     (puthash id 'executing (emacs-agent-run-tool-call-ids run))
     (emacs-agent-session-record run 'tool-call (list :id id :args args))
-    (let* ((source (emacs-agent-run-source-buffer run))
-           (buffer (if (buffer-live-p source) source
-                     (emacs-agent-run-transport-buffer run)))
-           ;; No selected-window switch, widening, or stale point restoration.
-           (result (with-current-buffer buffer
-                     (emacs-agent-eval (plist-get args :expression))))
-           (record (list :role 'tool :run-id (emacs-agent-run-id run)
-                         :id id :name "eval_elisp" :args args :result result
-                         :protocol (copy-tree (emacs-agent-run-response-protocol run)))))
-      (puthash id result (emacs-agent-run-tool-call-ids run))
-      ;; Preserve effects/results even if Lisp cancelled its own run.
-      (emacs-agent-session-record run 'tool-result
-                                  (list :id id :result result) record)
-      (when (emacs-agent-gptel--live-p run)
-        (funcall continuation result)))))
+    (if (not (emacs-agent-gptel--live-p run))
+        (puthash id 'cancelled (emacs-agent-run-tool-call-ids run))
+      (cl-incf (emacs-agent-run-tool-count run))
+      (let* ((source (emacs-agent-run-source-buffer run))
+             (buffer (if (buffer-live-p source) source
+                       (emacs-agent-run-transport-buffer run)))
+             ;; No selected-window switch, widening, or stale point restoration.
+             (result (with-current-buffer buffer
+                       (emacs-agent-eval (plist-get args :expression))))
+             (record (list :role 'tool :run-id (emacs-agent-run-id run)
+                           :id id :name "eval_elisp" :args args :result result
+                           :protocol (copy-tree (emacs-agent-run-response-protocol run)))))
+        (puthash id result (emacs-agent-run-tool-call-ids run))
+        ;; Preserve effects/results even if Lisp cancelled its own run.
+        (emacs-agent-session-record run 'tool-result
+                                    (list :id id :result result) record)
+        (when (emacs-agent-gptel--live-p run)
+          (funcall continuation result))))))
 
 (defun emacs-agent-gptel--drain (run)
   "Execute pending tools sequentially for RUN or pause at its budget.
@@ -353,15 +368,102 @@ This is a request-local FSM handler: gptel's global handlers are untouched."
      run (pcase (gptel-fsm-state fsm) ('ERRS 'failed) ('ABRT 'cancelled) (_ 'received))
      (gptel-fsm-info fsm))))
 
+(defun emacs-agent-gptel--steering-record (run input)
+  "Return INPUT's canonical user record belonging to RUN."
+  (let ((prepared (emacs-agent-input-run input)))
+    (list :role 'user :run-id (emacs-agent-run-id run)
+          :input-id (emacs-agent-input-id input)
+          :text (emacs-agent-run-user-text prepared)
+          :context (emacs-agent-run-editor-context prepared))))
+
+(defun emacs-agent-gptel--wait (run handlers fsm)
+  "Run private WAIT HANDLERS for RUN, delivering only after a complete batch.
+Claim wire/history/identities without event hooks between commit and transport.
+Publish one batch audit afterward; reentrant cancellation cannot launch HTTP."
+  (when (and (emacs-agent-gptel--live-p run)
+             (memq (car (plist-get (gptel-fsm-info fsm) :history)) '(INIT TRET)))
+    (let* ((session (emacs-agent-run-session run))
+           (info (gptel-fsm-info fsm))
+           (old-data (plist-get info :data))
+           (old-messages (emacs-agent-session-messages session))
+           claimed launched)
+      (condition-case err
+          (progn
+            (emacs-agent-gptel--usage-begin run fsm)
+            (when (emacs-agent-gptel--live-p run)
+              (emacs-agent-gptel--restore-protocol run fsm))
+            (when (and (emacs-agent-gptel--live-p run)
+                       (eq (car (plist-get info :history)) 'TRET)
+                       (emacs-agent-input-for-run run))
+              (let* ((specs (plist-get info :tool-use))
+                     (data (copy-tree (plist-get info :data) t))
+                     (messages (append (plist-get data :messages) nil))
+                     (inputs (emacs-agent-input-for-run run)))
+                (unless (and specs (null (emacs-agent-run-pending-tools run))
+                             (cl-every (lambda (spec)
+                                         (and (stringp (plist-get spec :result))
+                                              (stringp (gethash (plist-get spec :id)
+                                                               (emacs-agent-run-tool-call-ids run)))))
+                                       specs)
+                             (>= (length messages) (length specs))
+                             (cl-every (lambda (m) (equal (plist-get m :role) "tool"))
+                                       (last messages (length specs))))
+                  (error "Steering requires a complete restored tool batch"))
+                (let* ((records (mapcar (apply-partially #'emacs-agent-gptel--steering-record run) inputs))
+                       (preview (copy-emacs-agent-run run))
+                       (preview-session (copy-emacs-agent-session session))
+                       (proposed (append old-messages records)))
+                  (setf (emacs-agent-run-session preview) preview-session
+                        (emacs-agent-session-messages preview-session) proposed)
+                  (let ((prompts (last (emacs-agent-gptel--history preview) (length inputs))))
+                    (dolist (prompt prompts)
+                      (gptel--inject-prompt (emacs-agent-run-backend run) data
+                                            (list :role "user" :content (cadr prompt)))))
+                  ;; Nothing below calls event hooks until HTTP has been invoked.
+                  (setq claimed inputs)
+                  (dolist (input inputs) (emacs-agent-input-delivered input))
+                  (setf (emacs-agent-session-messages session) proposed)
+                  (plist-put info :data data))))
+            ;; Observe successful transport return before pinned post-request
+            ;; hooks run.  Forward every call unchanged, including other FSMs
+            ;; entered reentrantly; never install global advice or hooks.
+            (let ((curl (symbol-function 'gptel-curl-get-response))
+                  (url (symbol-function 'gptel--url-get-response)))
+              (cl-letf (((symbol-function 'gptel-curl-get-response)
+                         (lambda (state)
+                           (prog1 (funcall curl state)
+                             (when (eq state fsm) (setq launched t)))))
+                        ((symbol-function 'gptel--url-get-response)
+                         (lambda (state)
+                           (prog1 (funcall url state)
+                             (when (eq state fsm) (setq launched t))))))
+                (dolist (handler handlers)
+                  (when (emacs-agent-gptel--live-p run) (funcall handler fsm)))))
+            (when (and claimed (not launched) (emacs-agent-gptel--live-p run))
+              (error "Steering transport did not launch"))
+            (when claimed
+              (emacs-agent-session-record run 'steering (mapcar #'emacs-agent-input-data claimed))))
+        ((error quit)
+         (when (and claimed launched)
+           (emacs-agent-session-record run 'steering (mapcar #'emacs-agent-input-data claimed)))
+         (when (emacs-agent-gptel--live-p run)
+           (when (and claimed (not launched))
+             (setf (emacs-agent-session-messages session) old-messages
+                   (emacs-agent-session-inputs session)
+                   (append claimed (emacs-agent-session-inputs session)))
+             (plist-put info :data old-data)
+             (dolist (input claimed) (setf (emacs-agent-input-state input) 'queued)))
+           (emacs-agent-gptel--finish run (if (eq (car err) 'quit) 'cancelled 'failed)
+                                     (error-message-string err))))))))
+
 (defun emacs-agent-gptel--make-fsm (run)
   "Make RUN's private FSM with usage boundaries and terminal handlers.
 Slot access and state names are isolated pinned-gptel contracts."
   (let ((fsm (gptel-make-fsm)))
     (setf (gptel-fsm-handlers fsm) (copy-tree (gptel-fsm-handlers fsm)))
     (setf (alist-get 'WAIT (gptel-fsm-handlers fsm))
-          (append (list (apply-partially #'emacs-agent-gptel--usage-begin run)
-                        (apply-partially #'emacs-agent-gptel--restore-protocol run))
-                  (alist-get 'WAIT (gptel-fsm-handlers fsm))))
+          (list (apply-partially #'emacs-agent-gptel--wait run
+                                 (alist-get 'WAIT (gptel-fsm-handlers fsm)))))
     ;; TYPE is too early for streams: headers arrive before body/usage parsing.
     ;; TOOL must be observed BEFORE its default handler can start another WAIT.
     (dolist (state '(TOOL DONE ERRS ABRT))
@@ -424,15 +526,22 @@ Slot access and state names are isolated pinned-gptel contracts."
     (when-let* ((run (pop (emacs-agent-session-pending-runs session))))
       (setf (emacs-agent-session-active-run session) run
             (emacs-agent-run-status run) 'requesting
-            (emacs-agent-run-tool-budget run) emacs-agent-max-tool-calls
+            (emacs-agent-run-tool-budget run) (or (emacs-agent-run-tool-budget run)
+                                                 emacs-agent-max-tool-calls)
             (emacs-agent-run-transport-buffer run)
             (generate-new-buffer (format " *emacs-agent-transport: %s*" (emacs-agent-run-id run))))
+      (when (emacs-agent-run-input run)
+        (emacs-agent-input-delivered (emacs-agent-run-input run)))
+      (setf (emacs-agent-session-last-source-buffer session) (emacs-agent-run-source-buffer run))
       (emacs-agent-session-record
        run 'user (emacs-agent-run-user-text run)
-       (list :role 'user :run-id (emacs-agent-run-id run)
-             :text (emacs-agent-run-user-text run) :context (emacs-agent-run-editor-context run)))
+       (append (list :role 'user :run-id (emacs-agent-run-id run))
+               (when (emacs-agent-run-input run)
+                 (list :input-id (emacs-agent-input-id (emacs-agent-run-input run))))
+               (list :text (emacs-agent-run-user-text run)
+                     :context (emacs-agent-run-editor-context run))))
       (condition-case err
-          (progn
+          (when (emacs-agent-gptel--live-p run)
             (unless (equal gptel-version "0.9.9.5")
               (error "Unsupported gptel version %s; replay requires the tested 0.9.9.5 revision" gptel-version))
             (unless (eq (type-of (emacs-agent-run-backend run)) 'gptel-openai)
@@ -447,32 +556,30 @@ Slot access and state names are isolated pinned-gptel contracts."
                    :context-policy (emacs-agent-run-context-policy run)
                    :stream (emacs-agent-run-stream run)
                    :tool-budget (emacs-agent-run-tool-budget run)))
-            (with-current-buffer (emacs-agent-run-transport-buffer run)
-            (setq-local default-directory
-                        (plist-get (emacs-agent-run-editor-context run) :default-directory))
-            (setq-local gptel-backend (emacs-agent-run-backend run)
-                        gptel-model (emacs-agent-run-model run)
-                        gptel-use-tools t gptel-use-context nil gptel-confirm-tool-calls t
-                        ;; Structured role/tool parsing must not inherit an
-                        ;; unrelated user preference for untracked plain text.
-                        gptel-track-response t
-                        ;; Agent-owned history must not inherit chat UI truncation.
-                        gptel--num-messages-to-send nil)
-            (setq-local gptel-tools
-                        (list (gptel-make-tool
-                               :name "eval_elisp" :category "emacs-agent"
-                               :function #'emacs-agent-eval :confirm t
-                               :description "Execute arbitrary Lisp in the shared live Emacs."
-                               :args '((:name "expression" :type string
-                                        :description "One or more Lisp forms.")))))
-            (let ((fsm (emacs-agent-gptel--make-fsm run)))
-              (setf (emacs-agent-run-request-handle run) fsm)
-              (gptel-request (emacs-agent-gptel--history run)
-                :buffer (current-buffer) :stream (emacs-agent-run-stream run)
-                :system (emacs-agent-resources-system emacs-agent-system-prompt
-                                                      (emacs-agent-run-instructions run))
-                :fsm fsm :transforms '(ignore)
-                :callback (apply-partially #'emacs-agent-gptel--callback run)))))
+            (when (emacs-agent-gptel--live-p run)
+              (with-current-buffer (emacs-agent-run-transport-buffer run)
+                (setq-local default-directory
+                            (plist-get (emacs-agent-run-editor-context run) :default-directory))
+                (setq-local gptel-backend (emacs-agent-run-backend run)
+                            gptel-model (emacs-agent-run-model run)
+                            gptel-use-tools t gptel-use-context nil gptel-confirm-tool-calls t
+                            ;; Do not inherit unrelated plain-text/truncation preferences.
+                            gptel-track-response t gptel--num-messages-to-send nil)
+                (setq-local gptel-tools
+                            (list (gptel-make-tool
+                                   :name "eval_elisp" :category "emacs-agent"
+                                   :function #'emacs-agent-eval :confirm t
+                                   :description "Execute arbitrary Lisp in the shared live Emacs."
+                                   :args '((:name "expression" :type string
+                                            :description "One or more Lisp forms.")))))
+                (let ((fsm (emacs-agent-gptel--make-fsm run)))
+                  (setf (emacs-agent-run-request-handle run) fsm)
+                  (gptel-request (emacs-agent-gptel--history run)
+                    :buffer (current-buffer) :stream (emacs-agent-run-stream run)
+                    :system (emacs-agent-resources-system emacs-agent-system-prompt
+                                                          (emacs-agent-run-instructions run))
+                    :fsm fsm :transforms '(ignore)
+                    :callback (apply-partially #'emacs-agent-gptel--callback run))))))
         (quit (emacs-agent-gptel--finish run 'cancelled "Request setup interrupted"))
         (error (emacs-agent-gptel--finish run 'failed (error-message-string err)))))))
 
@@ -483,12 +590,19 @@ Each run has its own transport, callback guard, tool registry and budget."
                       emacs-agent-session--registry)
               (emacs-agent-run-session run))
     (user-error "Stale agent session; reopen from a working buffer"))
-  (let ((source (emacs-agent-run-source-buffer run)))
-    (with-current-buffer (if (buffer-live-p source) source (current-buffer))
-      (setf (emacs-agent-run-backend run) gptel-backend
-            (emacs-agent-run-model run) gptel-model
-            (emacs-agent-run-stream run) emacs-agent-stream
-            (emacs-agent-run-context-policy run) emacs-agent-context-history)))
+  (unless (eq (emacs-agent-run-status run) 'queued)
+    (user-error "Run already started"))
+  (condition-case err
+      (setf (emacs-agent-input-state (emacs-agent-input-prepare run 'ask)) 'queued)
+    (error
+     (let ((session (emacs-agent-run-session run)))
+       (setf (emacs-agent-session-pending-runs session)
+             (delq run (emacs-agent-session-pending-runs session)))
+       (when-let* ((previous (or (car (last (emacs-agent-session-pending-runs session)))
+                                (emacs-agent-session-active-run session))))
+         (setf (emacs-agent-session-last-source-buffer session)
+               (emacs-agent-run-source-buffer previous))))
+     (signal (car err) (cdr err))))
   (emacs-agent-session-record run 'queued (emacs-agent-run-user-text run))
   (emacs-agent-session-record run 'instructions (copy-tree (emacs-agent-run-instructions run)))
   (emacs-agent-gptel--start-next (emacs-agent-run-session run))

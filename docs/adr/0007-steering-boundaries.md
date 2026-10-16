@@ -1,8 +1,9 @@
 # ADR-0007: Контекст steering и финальная граница
 
 Статус: семантика контекста и final boundary согласована пользователем.
-Offline spike текущего pinned gptel FSM выполнен; пользовательский pending/UI
-steering ещё не реализован.
+Offline spike выполнен. Пользователь согласовал pending UX ниже;
+production реализация прошла offline проверку; пользователь также сообщил,
+что проверил результат, и одобрил commit.
 
 ## Принятые решения
 
@@ -75,3 +76,99 @@ messages числу inputs. Это не потеря snapshots и не смен�
 прототип живёт только в тестах. Ещё предстоит заморозка всех prepared inputs
 при финальном преобразовании (включая resources/config), лимиты, команды,
 редактирование/отзыв, сохранение pending и cancel/error recovery.
+
+## Согласованный UX после spike
+
+- Pending view охватывает обычные ожидающие ask и steering. `ask` остаётся
+  независимым FIFO; отмена активной задачи по-прежнему не отменяет следующие
+  обычные ask. Недоставленные steering отменённой/ошибочной задачи — recovery,
+  не продолжение следующего run.
+- Редактирование сначала отзывает input, до открытия minibuffer. RET повторно
+  ставит его в конец, сохраняя context/config/instructions; C-g оставляет
+  исходный текст отозванным и доступным. Доставленные inputs неизменяемы.
+- Лимиты на сессию: 8 недоставленных inputs, включая withdrawn/recovery;
+  256 КиБ суммарных frozen payload (UTF-8 Lisp serialization полей run,
+  включая text/context/instructions, без backend objects/credentials).
+  Mutable lifecycle metadata не расходует payload budget. Лимиты настраиваемы;
+  overflow отклоняет новый ввод, не вытесняет старый. Отозванный input можно
+  явно забыть с подтверждением; audit остаётся. Retention всего старого audit
+  относится к последующим этапам, не к этой pending квоте.
+- После cancel/error/restart автоматической отправки recovery нет. Явная
+  повторная отправка остановленного/restarted input — новый самостоятельный
+  запрос. У ещё живого target ручное редактирование steering сохраняет intent
+  steering. Исходный context/instructions не переснимаются. После restart
+  живой source и configured backend проверяются/при необходимости выбираются
+  явно; credentials не сериализуются. Model/stream/policy/budget остаются
+  snapshot, проблемы конфигурации возвращаются ошибкой, без молчаливой замены.
+- `steer` при изначально idle session — user-error. Paused run принимает ввод,
+  но ждёт остаток batch. Target захватывается до minibuffer: если за это время
+  завершился, новый input становится FIFO ask той же сессии; если отменился
+  или упал, текст сохраняется для recovery. Не направлять его новому active run.
+
+## Production реализация
+
+`emacs-agent-input.el` отделяет prepared input от исполнения. У каждого input
+есть стабильный ID и frozen run; pending ledger хранит только недоставленные
+или withdrawn записи. Доставка удаляет запись из ledger до reentrant hooks;
+canonical user records сохраняют input-id и исходные snapshots. Повторная
+постановка недоставленного текста сохраняет ID, поскольку в model history
+его ещё нет. Forgotten/delivered данные остаются в audit, не в live quota.
+
+Приватный WAIT wrapper сохраняет pinned default handlers, но проверяет live
+ownership перед каждым transport handler. Только TRET с полными results всей
+batch допускает steering. Preview history и copied wire проходят validation
+до commit. Между commit canonical/wire/identities и запуском HTTP нет event
+hooks; затем публикуется один audit batch. Успешный возврат transport отмечается
+временными forwarding bindings curl/url, строго для данного FSM; другие FSMs
+делегируются без изменений, global advice/hooks не устанавливаются. Ошибка до
+launch откатывает ещё живой claim в recovery; ошибка post-request hook после
+launch сохраняет delivered history. Это граница запуска, не provider ack.
+Повтор WAIT без нового INIT/TRET не запускает новый HTTP.
+Usage остаётся per-HTTP, а не per-input. Initial WAIT steering не принимает.
+
+DONE disposition централизован в finish: оставшиеся queued steering inputs
+становятся fresh run objects с собственными сохранёнными context/source,
+backend/model/stream/policy/tool budget/instructions; они идут позади уже
+стоящих обычных ask. Ничего не перечитывается. Cancel/error снимает eligibility
+сразу до event hooks; повторные terminal/stale callbacks не конвертируют input
+повторно. Active system prompt и default execution source steering не меняет.
+
+Schema 2 получает optional `:inputs`; это расширение data как ранее frozen
+instructions, без миграции/исполнения старых записей. Данные проверяются до
+registry update. Restore создаёт только withdrawn/restart, не transports,
+очередь выполнения или backend objects. Повтор restore→save→restore сохраняет
+recovery. IDs резервируются до новых interrupted events. Сохраняются fast
+per-record printer (включая inputs), atomic rename, 0600 и best-effort autosave:
+ошибка записи видна, но не откатывает уже выполненные tools/начатый HTTP.
+Offline inspection по-прежнему не требует установленного gptel.
+
+Команды: `emacs-agent-steer`, `emacs-agent-pending`. В pending view `g` refresh,
+`e` edit, `d` withdraw, `r` explicit recover, `D` forget с подтверждением,
+RET — полный текст без context/API JSON. Live view обновляется на lifecycle,
+не на streaming deltas; callbacks не создают и не выбирают окна.
+Journal: C-c C-s steering, C-c C-p pending. Global bindings не добавляются.
+
+## Проверка production
+
+187 ERT и warnings-as-errors compilation прошли. Проверены actual pinned SSE
+с индексами calls и non-stream parsing, полная batch/pause-resume, nil/current/
+full и A→A→B→A, final FIFO без reread и с другим frozen model/stream/budget,
+withdraw/edit/abort/overflow UTF-8, inert durable recovery и malformed input
+rejection до registry update. Recovery сохраняется повторным save/restore;
+подтверждены отсутствие secrets/backend objects и permission/atomic-failure.
+
+Независимый review воспроизвёл три bugs, исправленные regression ERT:
+assistant-end recursive finish терял нового FIFO owner; tool-call cancel всё
+ещё запускал eval; ошибка post-request hook возвращала уже отправленный
+steering в recovery. Теперь terminal ownership claimed до любых hooks,
+clear active только при eq owner; после tool-call live проверяется заново;
+post-launch exception не откатывает доставленный текст. Отдельно проверено,
+что reentrant уточнение на final не обгоняет ранее принятые inputs.
+
+Прежний приватный ~391 КБ sample: full atomic save ~15 мс, 5 повторов без GC.
+Модель и пользовательские исходники не трогались; новых provider вызовов и
+interactive F2 smoke не было. Старые in-memory structs в рабочем Emacs не
+перезагружались: для применения нужен restart. Файлы schema 2 читаются без
+миграции. Затем пользователь сообщил «Проверил» и одобрил commit.
+Подробности пользовательского прогона не фиксировались: это не отдельный
+инструментированный отчёт по всей real-provider smoke matrix.

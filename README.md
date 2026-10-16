@@ -96,10 +96,41 @@ mid-turn. Filtering never mutates stored snapshots or history records.
 Ambient gptel prompt transforms and chat UI history truncation are disabled
 for the private transport only; user's gptel settings/hooks are unchanged.
 
-F2 steering is not yet a user command. Its offline FSM spike confirms delivery
-after a complete tool batch and final-boundary conversion to a new FIFO run.
-Canonical history now supports unique input IDs within one contiguous run;
-pending UI/edit/withdraw/recovery still need implementation. See
+### Steering and pending input
+
+`M-x emacs-agent-steer` captures its own context and queues clarification for the
+current active run (paused runs too). It delivers after the **entire tool batch**,
+never between tools. It does not change that run's execution buffer, settings or
+system instructions. With no active run it errors; ordinary `ask` remains FIFO.
+If the captured target completes during input or before delivery, clarification
+becomes a new FIFO run behind older asks, with its own frozen configuration and
+instructions. Cancel/error retains undelivered steering for explicit recovery;
+independent ordinary queued asks keep their existing FIFO behavior.
+
+`M-x emacs-agent-pending` opens a read-only list of pending asks and steering:
+`g` refresh, `e` edit, `d` withdraw, `r` resubmit, `D` forget withdrawn input with
+confirmation, `RET` full text. Editing withdraws **before** opening the minibuffer;
+`C-g` keeps the original withdrawn text. `RET` resubmits at the tail with original
+context/config/instructions, not a new capture from the pending view. Live-target
+steering stays steering; stopped/restarted recovery becomes an ordinary ask.
+Lifecycle updates refresh an already open view without selecting windows.
+
+`emacs-agent-pending-input-limit` defaults to 8 undelivered entries per session,
+including withdrawn recovery. `emacs-agent-pending-byte-limit` defaults to 256 KiB
+of UTF-8 frozen run payloads (text/context/instructions included). Overflow
+rejects the new submission without evicting existing input. Withdraw does not
+free recovery space; reuse or explicitly forget it. These are not audit retention
+limits. Persistence remains best-effort with visible save warnings.
+
+After restart inputs are recovery-only, never automatically sent. Recovery checks
+live source identity and configured backend, prompting if unavailable; credentials
+are not saved. Context/instructions/model settings stay frozen. Offline inspection
+does not require gptel. Journal shortcuts: `C-c C-s` steer, `C-c C-p` pending.
+
+Offline coverage includes real pinned streaming/non-streaming parsing with mocked
+HTTP, lifecycle/reentrancy, bounds and recovery. Live F2 smoke is still separate.
+When updating an already running pre-F2 Emacs, restart before using the new state
+structs; old schema-2 snapshots remain readable without migration. See
 [ADR-0007](docs/adr/0007-steering-boundaries.md).
 
 Snapshot autosave uses fast per-record Lisp serialization, not recursive
@@ -416,7 +447,7 @@ normal minibuffer hooks/keymaps; the agent does not supply a custom editor.
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 162 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 187 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh

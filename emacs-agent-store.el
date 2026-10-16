@@ -7,7 +7,7 @@
 ;;; Code:
 (require 'emacs-agent-session)
 (require 'emacs-agent-usage)
-(require 'pp)
+(require 'emacs-agent-input)
 
 (defcustom emacs-agent-data-directory (expand-file-name "emacs-agent/" user-emacs-directory)
   "Directory for session snapshots, outside working projects by default.
@@ -128,8 +128,9 @@ Concatenate each block once, avoiding quadratic string accumulation."
   (unless (emacs-agent-store--identity-p (emacs-agent-session-key session)
                                        (emacs-agent-session-project-root session))
     (error "Session has no canonical persistence identity"))
-  (unless (proper-list-p (emacs-agent-session-pending-runs session))
-    (error "Malformed pending run queue"))
+  (unless (and (proper-list-p (emacs-agent-session-pending-runs session))
+               (proper-list-p (emacs-agent-session-inputs session)))
+    (error "Malformed pending run or input queue"))
   (let* ((active (emacs-agent-session-active-run session))
          (messages (emacs-agent-store--data (emacs-agent-session-messages session)))
          (runs (append (when active (list active)) (emacs-agent-session-pending-runs session))))
@@ -151,7 +152,9 @@ Concatenate each block once, avoiding quadratic string accumulation."
                        :updated-at (emacs-agent-session-updated-at session)
                        :source (emacs-agent-store--source (emacs-agent-session-last-source-buffer session))
                        :messages messages :events (emacs-agent-session-events session)
-                       :runs (mapcar #'emacs-agent-store--run runs)))))
+                       :runs (mapcar #'emacs-agent-store--run runs)
+                       :inputs (mapcar #'emacs-agent-input-data
+                                       (emacs-agent-session-inputs session))))))
       ;; Validate every original identity/field before aggregation can hide it.
       (emacs-agent-store--validate data
                                    (emacs-agent-store--file (emacs-agent-session-key session)) t)
@@ -160,7 +163,7 @@ Concatenate each block once, avoiding quadratic string accumulation."
 
 (defun emacs-agent-store--print (data)
   "Print validated snapshot DATA without recursive pretty-print layout.
-Keep top-level fields and individual messages/events/runs on separate lines.
+Keep top-level fields and each message/event/run/input on separate lines.
 The Lisp data and schema are unchanged; long strings stay escaped by the
 caller's print settings.  Pretty layout in every network callback is costly."
   (insert "(")
@@ -168,7 +171,7 @@ caller's print settings.  Pretty layout in every network callback is costly."
            (insert "\n ")
            (prin1 key (current-buffer))
            (insert " ")
-           (if (and value (memq key '(:messages :events :runs)))
+           (if (and value (memq key '(:messages :events :runs :inputs)))
                (progn
                  (insert "(")
                  (dolist (record value)
@@ -218,7 +221,7 @@ LIVE-EVENTS allows raw deltas and not-yet-recomputed block states in a copied
 live list.  Durable snapshots require complete, consistent block metadata."
   (emacs-agent-store--plist data)
   (cl-loop for key in data by #'cddr do
-           (unless (memq key '(:schema :adapter :id :key :project-root :updated-at :source :messages :events :runs))
+           (unless (memq key '(:schema :adapter :id :key :project-root :updated-at :source :messages :events :runs :inputs))
              (error "Unknown snapshot field")))
   (unless (eql (plist-get data :schema) emacs-agent-store--schema)
     (error "Unsupported session schema; no migration is provided, use a new data directory"))
@@ -229,7 +232,7 @@ live list.  Durable snapshots require complete, consistent block metadata."
                (emacs-agent-store--identity-p (plist-get data :key) (plist-get data :project-root))
                (equal (expand-file-name file) (emacs-agent-store--file (plist-get data :key))))
     (error "Invalid session identity or filename"))
-  (dolist (field '(:messages :events :runs))
+  (dolist (field '(:messages :events :runs :inputs))
     (unless (proper-list-p (plist-get data field)) (error "Malformed session collection")))
   (dolist (message (plist-get data :messages))
     (emacs-agent-store--plist message)
@@ -260,11 +263,37 @@ live list.  Durable snapshots require complete, consistent block metadata."
                  (memq (plist-get run :status)
                        '(queued requesting streaming tool-running paused completed failed cancelled)))
       (error "Malformed saved run")))
+  (let ((run-ids (make-hash-table :test #'equal))
+        (input-ids (make-hash-table :test #'equal))
+        (prepared-ids (make-hash-table :test #'equal))
+        (delivered-inputs (make-hash-table :test #'equal))
+        (delivered-runs (make-hash-table :test #'equal)))
+    (dolist (message (plist-get data :messages))
+      (when (eq (plist-get message :role) 'user)
+        (puthash (plist-get message :run-id) t delivered-runs)
+        (when (plist-get message :input-id)
+          (puthash (plist-get message :input-id) t delivered-inputs))))
+    (dolist (run (plist-get data :runs))
+      (when (gethash (plist-get run :id) run-ids) (error "Duplicate saved run ID"))
+      (puthash (plist-get run :id) run run-ids))
+    (dolist (input (plist-get data :inputs))
+      (emacs-agent-input-validate-data input)
+      (let* ((id (plist-get input :id))
+             (run-id (plist-get (plist-get input :run) :id)))
+        (when (or (gethash id input-ids) (gethash run-id prepared-ids)
+                  (gethash id delivered-inputs) (gethash run-id delivered-runs))
+          (error "Duplicate or already delivered pending input/run ID"))
+        (puthash id t input-ids)
+        (puthash run-id t prepared-ids)
+        (when (and (eq (plist-get input :state) 'queued)
+                   (eq (plist-get input :kind) 'ask)
+                   (not (eq (plist-get (gethash run-id run-ids) :status) 'queued)))
+          (error "Queued ask has no queued run")))))
   data)
 
 (defun emacs-agent-store--bump-id (id)
   "Avoid reusing numeric IDs found in restored ID."
-  (when (and (stringp id) (string-match "\\`\\(?:session\\|run\\|event\\)-\\([0-9]+\\)\\'" id))
+  (when (and (stringp id) (string-match "\\`\\(?:session\\|run\\|event\\|input\\)-\\([0-9]+\\)\\'" id))
     (setq emacs-agent-session--counter
           (max emacs-agent-session--counter (string-to-number (match-string 1 id))))))
 
@@ -292,13 +321,33 @@ live list.  Durable snapshots require complete, consistent block metadata."
           (dolist (event (emacs-agent-session-events session))
             (emacs-agent-store--bump-id (plist-get event :id))
             (emacs-agent-store--bump-id (plist-get event :last-id))
-            (emacs-agent-store--bump-id (plist-get event :run-id)))
+            (emacs-agent-store--bump-id (plist-get event :run-id))
+            (when (eq (plist-get event :type) 'input)
+              (let ((payload (plist-get event :payload)))
+                (when (and (proper-list-p payload) (cl-evenp (length payload)))
+                  (emacs-agent-store--bump-id (plist-get payload :id))
+                  (emacs-agent-store--bump-id (plist-get payload :input-id))
+                  (emacs-agent-store--bump-id (plist-get payload :target-id))
+                  (let ((run (plist-get payload :run)))
+                    (when (and (proper-list-p run) (cl-evenp (length run)))
+                      (emacs-agent-store--bump-id (plist-get run :id))))))))
           (dolist (message (emacs-agent-session-messages session))
-            (emacs-agent-store--bump-id (plist-get message :run-id)))
+            (emacs-agent-store--bump-id (plist-get message :run-id))
+            (emacs-agent-store--bump-id (plist-get message :input-id)))
+          ;; All durable IDs must be reserved before interruption events allocate
+          ;; new ones.  Recovery inputs are inert and never enter the run queue.
+          (setf (emacs-agent-session-inputs session)
+                (mapcar (lambda (saved)
+                          (emacs-agent-store--bump-id (plist-get saved :id))
+                          (emacs-agent-store--bump-id (plist-get saved :target-id))
+                          (emacs-agent-store--bump-id (plist-get (plist-get saved :run) :id))
+                          (emacs-agent-input-restore saved session))
+                        (plist-get data :inputs)))
+          (dolist (saved (plist-get data :runs))
+            (emacs-agent-store--bump-id (plist-get saved :id)))
           ;; Insert only after validation.  Interrupt records are generated
           ;; without event hooks, so restore neither autosaves nor sends HTTP.
           (dolist (saved (plist-get data :runs))
-            (emacs-agent-store--bump-id (plist-get saved :id))
             (unless (memq (plist-get saved :status) '(completed failed cancelled))
               (let ((emacs-agent-session-event-functions nil))
                 (plist-put
