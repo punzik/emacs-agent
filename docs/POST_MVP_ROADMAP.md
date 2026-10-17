@@ -722,22 +722,31 @@ project selection и отсутствие reload duplicates. Независим�
 или summary. Это не обещание exactly-once/rollback. Нумерация F8 сохраняется.
 См. [ADR-0013](adr/0013-interactive-editor-no-tool-ledger.md).
 
-### F8 — Ветки и bookmarks
+### F8 — Минимальный fork от завершённой границы
+
+**Согласованный scope:** отдельный разговор поверх F6 clone, не дерево веток.
+Bookmarks, selected-head navigation и отдельная branch summary пока не входят.
+Решение: [ADR-0014](adr/0014-minimal-fork-after-compaction.md).
 
 **Работа:**
 
-1. Добавить parent/selected-head модель с проверкой ancestry и migration.
-2. Сначала выбирать только safe completed boundaries; затем добавлять удобные
-   bookmarks и повторное редактирование выбранного user input.
-3. Raw alternatives сохраняются, model projection выбирает одну ветвь.
-4. Branch summary — отдельная opt-in операция без tools; ошибки generation
-   не переключают рабочую ветвь. Branch selection не откатывает общий Emacs.
-5. Правила model/resources/summary inheritance и interrupted heads должны быть
-   явными. Не разрешать переключение head посреди active run.
+1. Выбрать завершённую границу истории и создать независимый разговор с историей
+   до неё; оригинал сохранить неизменным. Не разрывать tool call/result pairs.
+2. По решению пользователя compaction считается первым логическим событием:
+   доступная история начинается с последней summary, затем retained suffix.
+   Можно fork сразу после summary или на завершённой границе suffix. События
+   внутри свёрнутого prefix не предлагаются: summary могла бы внести будущее.
+3. Fork наследует summary и suffix только до выбранной границы, без последующих
+   событий. Исходный raw archive сохраняется; существующий журнал не меняется.
+4. Никакого повторного исполнения tools или отката буферов/файлов/процессов.
+   Idle restrictions, failure-before-selection и inert runtime — как у F6 clone.
+5. Перед реализацией проверить конкретные API/UI и metadata inheritance по F6/F4;
+   не добавлять parent/selected-head machinery или миграции ради этого slice.
 
-**Готово:** проверены tree/restore/ancestry, tool pairs, metadata inheritance,
-late callbacks и независимость старой ветви; UI явно предупреждает, что файлы,
-буферы и процессы не возвращаются к старому состоянию.
+**Готово, когда:** проверены boundaries до/после compaction, summary-only fork,
+отсутствие будущих событий, целостность tool pairs, save/restore и независимость
+оригинала/копии; UI явно сообщает, что состояние редактора не откатывается.
+Реализация пока не начата.
 
 ## 6. Следующие кандидаты, но не обязательства текущего плана
 
