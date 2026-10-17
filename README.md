@@ -503,6 +503,30 @@ cloning from an archive alone does not inherit its old execution source.
 No migration: pre-F6 `global.eld` / `project-*.eld` stay untouched but do not appear
 in the F6 catalog. See [ADR-0012](docs/adr/0012-multiple-conversations.md).
 
+## Fork from history (F8)
+
+`M-x emacs-agent-session-fork` selects a completed turn and creates a separate
+conversation through that point. The newest eligible point is the default;
+`C-u` also asks for a name. A turn includes delivered steering and all its tool
+pairs; individual tool calls, failed/cancelled turns and active work are not
+fork endpoints. The source and other involved selections must be idle.
+
+After compaction, the **latest summary is the first logical event** in the
+picker. You can fork immediately after it (summary only) or after a completed
+retained turn, never inside the summarized prefix. The summarized raw records
+remain stored internally for existing history/protocol validation; the model
+sees only the inherited summary plus the chosen suffix. Summary-only forks show
+an inherited-summary entry, not the old raw journal. Other forks retain the
+chosen audit prefix, excluding future queued inputs and later events.
+
+The original is unchanged. The fork is selected and focused, with the same
+save-before-selection and source-binding rules as clone. It inherits no pending
+recovery, runtime handles or usage anchor. Changes during the boundary/name
+minibuffer cause an explicit retry rather than a silently different fork.
+**Buffers, files and processes are NOT rolled back; tools are never replayed.**
+Old F3 output paths still reference the same artifacts. No tree/bookmarks or
+extra summary generation is involved. See [ADR-0014](docs/adr/0014-minimal-fork-after-compaction.md).
+
 ## Persistence and recovery
 
 `emacs-agent-data-directory` defaults to `emacs-agent/` below
@@ -588,7 +612,7 @@ normal minibuffer hooks/keymaps; the agent does not supply a custom editor.
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 252 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 275 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh

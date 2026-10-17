@@ -159,24 +159,106 @@ SOURCE, when supplied, is the journal owner and must be idle in that scope."
         (remhash preview emacs-agent-store--last-save)))
     session))
 
-(defun emacs-agent-session--clone (session &optional name)
+(defun emacs-agent-session--fork-points (session)
+  "Return completed-turn boundaries and the latest summary for idle SESSION.
+Each :end is an exclusive absolute canonical-message count, not an event index.
+A summary is the first logical point, even when its cut falls inside a turn."
+  (emacs-agent-session--guard session (emacs-agent-session-key session))
+  (let ((ends (make-hash-table :test #'equal))
+        (texts (make-hash-table :test #'equal))
+        (completed (make-hash-table :test #'equal))
+        (terminal (make-hash-table :test #'equal))
+        (cut (or (plist-get (emacs-agent-session-compaction session) :cut) 0))
+        previous (index 0) points)
+    (dolist (record (emacs-agent-session-messages session))
+      (let ((id (plist-get record :run-id)))
+        (unless (and (stringp id) (not (string-empty-p id))
+                     (or (equal id previous) (not (gethash id ends))))
+          (user-error "History has ambiguous turn boundaries"))
+        (when (and (eq (plist-get record :role) 'user) (not (gethash id texts)))
+          (puthash id (plist-get record :text) texts))
+        (puthash id (cl-incf index) ends)
+        (setq previous id)))
+    (unless (and (integerp cut) (<= 0 cut index))
+      (user-error "Invalid compaction boundary"))
+    (when (> cut 0) (push (list :kind 'summary :end cut) points))
+    (dolist (event (emacs-agent-session-events session))
+      (let ((id (plist-get event :run-id)) (type (plist-get event :type)))
+        (cond
+         ((eq type 'completed)
+          (if (gethash id terminal)
+              (remhash id completed)
+            (puthash id t terminal)
+            (when-let* ((end (gethash id ends)))
+              (when (> end cut)
+                (puthash id (list :kind 'completed :end end :run-id id
+                                  :event-id (plist-get event :id)
+                                  :text (or (gethash id texts) ""))
+                         completed)))))
+         ;; A late canonical commitment/delta makes a completion ambiguous.
+         ((and (gethash id terminal)
+               (memq type '(user assistant assistant-end tool-call tool-result
+                                 steering unsupported-protocol)))
+          (remhash id completed)))))
+    (maphash (lambda (_ point) (push point points)) completed)
+    (sort points (lambda (a b) (< (plist-get a :end) (plist-get b :end))))))
+
+(defun emacs-agent-session--clone (session &optional name fork-end)
   "Deep-copy idle SESSION's history into a fresh selected conversation.
+With FORK-END, copy only through that eligible canonical-message boundary.
 Historical run/input/tool IDs stay historical.  No live authority is copied."
   (emacs-agent-session--unlocked)
   (let ((emacs-agent-session--mutation t))
     (emacs-agent-session--guard session (emacs-agent-session-key session))
-    (let ((clone (emacs-agent-session--fresh (emacs-agent-session-project-root session) name)))
+    (let* ((point (when fork-end
+                    (or (cl-find fork-end (emacs-agent-session--fork-points session)
+                                 :key (lambda (p) (plist-get p :end)))
+                        (user-error "Not a current completed turn or summary boundary"))))
+           (messages (if point (cl-subseq (emacs-agent-session-messages session) 0 fork-end)
+                       (emacs-agent-session-messages session)))
+           (events (emacs-agent-session-events session))
+           (clone (emacs-agent-session--fresh (emacs-agent-session-project-root session) name)))
+      (when point
+        (let ((runs (make-hash-table :test #'equal)) retained)
+          (dolist (record messages) (puthash (plist-get record :run-id) t runs))
+          (unless (eq (plist-get point :kind) 'summary)
+            (catch 'end
+              (dolist (event events)
+                (when (gethash (plist-get event :run-id) runs) (push event retained))
+                (when (and (eq (plist-get event :type) 'completed)
+                           (equal (plist-get event :id) (plist-get point :event-id))
+                           (equal (plist-get event :run-id) (plist-get point :run-id)))
+                  (throw 'end nil)))))
+          (setq events (nreverse retained))))
       (setf (emacs-agent-session-provenance clone)
-            (list :source-id (emacs-agent-session-id session) :time (float-time))
-            (emacs-agent-session-messages clone)
-            (emacs-agent-store--data (emacs-agent-session-messages session))
-            (emacs-agent-session-events clone)
-            (emacs-agent-store--data (emacs-agent-session-events session))
+            (append (list :source-id (emacs-agent-session-id session) :time (float-time))
+                    (when point
+                      (list :boundary
+                            (append (list :kind (plist-get point :kind) :end fork-end)
+                                    (when (eq (plist-get point :kind) 'completed)
+                                      (list :run-id (plist-get point :run-id)
+                                            :event-id (plist-get point :event-id)))))))
+            (emacs-agent-session-messages clone) (emacs-agent-store--data messages)
+            (emacs-agent-session-events clone) (emacs-agent-store--data events)
             (emacs-agent-session-compaction clone)
             (emacs-agent-store--data (emacs-agent-session-compaction session)))
+      (when (and point (emacs-agent-session-compaction clone))
+        (push (list :id (format "event-%d" (cl-incf emacs-agent-session--counter))
+                    :time (float-time) :session-id (emacs-agent-session-id clone)
+                    :run-id (concat "fork-" (emacs-agent-session-id clone))
+                    :type 'inherited-summary
+                    :payload (emacs-agent-store--data (emacs-agent-session-compaction clone)))
+              (emacs-agent-session-events clone)))
       (dolist (event (emacs-agent-session-events clone))
         (setf (plist-get event :session-id) (emacs-agent-session-id clone)))
       (emacs-agent-session--switch clone session))))
+
+(defun emacs-agent-session--fork (session end &optional name)
+  "Fork idle SESSION at eligible canonical END, selecting a copy named NAME.
+No tools are dispatched and no editor state is restored."
+  (unless (and (integerp end) (> end 0))
+    (user-error "Fork requires a positive canonical boundary"))
+  (emacs-agent-session--clone session name end))
 
 (defun emacs-agent-session-origin ()
   "Resolve the calling buffer/window and session identity before minibuffer input.

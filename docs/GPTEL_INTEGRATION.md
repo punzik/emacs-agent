@@ -547,6 +547,39 @@ read-only review found no supported F6 issues; it did not run the full suite.
 No real-provider F6 smoke or user-Emacs hot-load was performed. Restart is required.
 See [ADR-0012](adr/0012-multiple-conversations.md).
 
+### F8: completed-boundary fork
+
+`emacs-agent-session-fork` creates/selects an independent F6 conversation after a
+completed whole run or the latest compaction summary. Summary is the earliest
+logical point, including when its cut falls inside a run. No tree, bookmark,
+extra summary request, tool replay or editor rollback is introduced.
+
+The clone transaction copies canonical `[0,end)` and the same absolute compaction
+cut. Model projection is exactly summary + suffix through the chosen boundary;
+raw summarized records stay available for existing F4 validation. Completed-turn
+forks retain only the event prefix through that completion, filtered by inherited
+canonical run IDs (not future queued inputs). Summary-only forks retain no raw
+audit events; compacted forks prepend an inert inherited-summary entry. The
+original archive/journal stays unchanged. Source-ID/time provenance gains an
+optional locally validated `:boundary`; it remains historical after later growth
+or compaction. Schema 3, slots and F6 identity/selection rules are unchanged.
+
+The completion picker defaults to newest, `C-u` asks for a name, and the command
+rejects changed history/selection after either minibuffer. Source and involved
+selections must remain idle. Failed/cancelled turns, individual tools and partial
+turns are not endpoints; tool pairs/protocol reasoning stay intact. A fork has no
+pending recovery, handles, usage anchor or inherited execution source. Only an
+explicit working-buffer invocation freshly binds that buffer, as with clone.
+
+275 ERT plus warnings-as-errors compile and diff-check pass. Tests cover real
+pinned-gptel dry-run wire comparisons, mid-run and summary-only boundaries,
+continuation/fork-of-fork, late/duplicate completions, excluded future queued audit,
+provenance validation, save/pointer failures and backend-free offline subprocess
+restore/fork. Independent read-only review found no supported issues; its focused
+offline growth/recompaction/fork/restore probe passed using mocked summary delivery.
+No provider or live user-Emacs UI smoke was performed.
+See [ADR-0014](adr/0014-minimal-fork-after-compaction.md).
+
 ## Post-MVP F4: pigo-style compaction
 
 `emacs-agent-compaction.el` contains provider-independent config, estimates,

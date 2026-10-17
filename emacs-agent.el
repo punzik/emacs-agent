@@ -348,6 +348,47 @@ With a prefix argument, ask for NAME.  Copy no runtime queue or authority."
     (emacs-agent--conversation-check origin)
     (emacs-agent--conversation-show (emacs-agent-session--clone source name) (plist-get origin :source))))
 
+;;;###autoload
+(defun emacs-agent-session-fork (&optional end name)
+  "Fork the explicit idle conversation after a completed turn or summary.
+END is an absolute canonical-message count; interactively choose a boundary.
+With a prefix argument, ask for NAME.  Editor/files are NOT rolled back."
+  (interactive)
+  (let* ((origin (emacs-agent--conversation-origin))
+         (source (or (plist-get origin :session) (user-error "No conversation here")))
+         (points (emacs-agent-session--fork-points source))
+         (messages-tail (last (emacs-agent-session-messages source)))
+         (events-tail (last (emacs-agent-session-events source)))
+         (compaction (emacs-agent-session-compaction source))
+         (number 0)
+         (choices
+          (mapcar (lambda (point)
+                    (cl-incf number)
+                    (cons (if (eq (plist-get point :kind) 'summary)
+                              (format "%d: after compaction summary" number)
+                            (format "%d: after %s — %s" number
+                                    (plist-get point :run-id)
+                                    (truncate-string-to-width
+                                     (replace-regexp-in-string "[\n\r\t]+" " " (plist-get point :text))
+                                     70 nil nil "…")))
+                          (plist-get point :end)))
+                  points)))
+    (unless choices (user-error "No completed turns or compaction summary to fork"))
+    (unless end
+      (setq end (cdr (assoc (completing-read "Fork after (no editor rollback): " choices nil t
+                                           nil nil (caar (last choices))) choices))))
+    (when (and (called-interactively-p 'interactive) current-prefix-arg)
+      (setq name (read-string "Fork name (optional): ")))
+    (emacs-agent--conversation-check origin)
+    (unless (and (eq messages-tail (last (emacs-agent-session-messages source)))
+                 (eq events-tail (last (emacs-agent-session-events source)))
+                 (eq compaction (emacs-agent-session-compaction source)))
+      (user-error "Conversation history changed; choose the fork point again"))
+    (let ((fork (emacs-agent-session--fork source end name)))
+      (emacs-agent--conversation-show fork (plist-get origin :source))
+      (message "Fork selected; buffers, files and processes were NOT rolled back")
+      fork)))
+
 (defun emacs-agent--conversation-matches-p (session regexp)
   "Search SESSION's local name, summary and archive text using REGEXP.
 Do not follow artifact paths or execute saved expressions."

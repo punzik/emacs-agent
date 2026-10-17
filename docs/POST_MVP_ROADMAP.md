@@ -1,8 +1,8 @@
 # Emacs Agent после MVP: выводы из Pi/Pigo и план развития
 
-**Статус:** F0, F0b, F0c, ограниченный F1, lifecycle/UI F2, минимальный F3, F4 и F6 реализованы; F5 отложен;
+**Статус:** F0, F0b, F0c, ограниченный F1, lifecycle/UI F2, минимальный F3, F4, F6 и минимальный F8 реализованы; F5 отложен; F7 исключён;
 инструментированные live F2/F4 smoke ещё отдельно. Устранён измеренный секундный pretty-print
-autosave stall. 252 offline ERT и byte compilation с
+autosave stall. 275 offline ERT и byte compilation с
 warnings-as-errors проходят. Для буферного редактирования F0 есть пользовательский
 live smoke и подтверждение undo; отдельный live smoke F0b ещё не выполнялся.
 Остальные post-MVP этапы не реализованы.
@@ -218,7 +218,7 @@ reasoning не управляет генерацией. Нельзя угады�
 | Context usage + manual/automatic compaction | Длинные разговоры без переполнения | F4 |
 | Agent Skills, lazy loading и resource inspection | Переиспользование специализированных инструкций | F5 |
 | Несколько именованных диалогов, поиск, clone | Не смешивать независимые задачи одного проекта | F6 |
-| Branches, bookmarks, продолжение из прошлого | Альтернативные решения без удаления истории | F8 |
+| Fork от завершённого хода или summary | Независимое продолжение из прошлого без удаления оригинала | F8 (минимальный slice; tree/bookmarks не входят) |
 | Model selection, declared thinking, diagnostics/export | Контроль конфигурации и наблюдаемость | Отдельные небольшие этапы после выбора пользователя |
 
 Это рекомендуемый порядок, не обещание реализовать всё за один проход.
@@ -740,13 +740,25 @@ Bookmarks, selected-head navigation и отдельная branch summary пок�
    событий. Исходный raw archive сохраняется; существующий журнал не меняется.
 4. Никакого повторного исполнения tools или отката буферов/файлов/процессов.
    Idle restrictions, failure-before-selection и inert runtime — как у F6 clone.
-5. Перед реализацией проверить конкретные API/UI и metadata inheritance по F6/F4;
-   не добавлять parent/selected-head machinery или миграции ради этого slice.
+5. Реализована команда `emacs-agent-session-fork`: completion по завершённым
+   model runs и summary, default — новейшая граница; `C-u` спрашивает имя.
+   Involved conversations idle; изменения истории/selection в minibuffer дают
+   ошибку вместо другого fork. Parent/head machinery и миграций нет.
 
-**Готово, когда:** проверены boundaries до/после compaction, summary-only fork,
-отсутствие будущих событий, целостность tool pairs, save/restore и независимость
-оригинала/копии; UI явно сообщает, что состояние редактора не откатывается.
-Реализация пока не начата.
+**Готово:** canonical prefix `[0,end)` и абсолютный compaction cut копируются
+без изменения проекции F4; provenance хранит boundary, но не runtime authority.
+Для completed point audit ограничен terminal event и inherited run IDs, чтобы
+не копировать future queued inputs. Summary-only fork имеет только inherited
+summary event, без raw audit; исходный архив/журнал не меняются.
+
+**Проверка:** 275 ERT, warnings-as-errors compile и diff-check. Проверены actual
+pinned-gptel wire/tool/reasoning replay, summary-only/mid-run cuts, продолжение и
+fork-of-fork, stale minibuffer, late/duplicate completions, malformed provenance,
+failed writes/pointers и backend-free fresh-process restore/fork. UI явно
+сообщает об отсутствии отката редактора. Provider/live UI smoke не выполнялся;
+рабочий Emacs не hot-loaded. Независимое read-only review не нашло подтверждённых
+проблем; отдельный offline probe с реальной F4 recompaction и mock summary
+проверил growth/fork-of-fork/save/restore.
 
 ## 6. Следующие кандидаты, но не обязательства текущего плана
 
@@ -793,7 +805,7 @@ Bookmarks, selected-head navigation и отдельная branch summary пок�
 | F3 | Хранение и cleanup artifacts | Приватное durable хранилище с references; явная cleanup policy, не бессрочный temp-file мусор |
 | F4 | Auto compaction default/окно модели | Начать с manual + opt-in auto; окно задаётся явно/из проверенных metadata |
 | F5 | YAML/parser dependency и precedence | Совместимость Agent Skills, bounded data parsing, ошибки duplicates одного уровня |
-| F6/F8 | Schema/migration и активные mutations | F6: schema 3 без миграций, legacy archives не импортируются; mutations только idle. F8 согласуется отдельно |
+| F6/F8 | Schema/migration и активные mutations | F6: schema 3 без миграций, legacy archives не импортируются; mutations только idle. F8 использует тот же schema 3 и optional boundary provenance |
 | F7 | Tool execution ledger | Исключён пользователем: общий интерактивный редактор; актуальное состояние проверяется заново, без durable dispatch gate |
 
 Remote resources не должны неявно запускать длительное TRAMP discovery только
@@ -826,8 +838,9 @@ loading. Любые новые пользовательские настройк
    проверенные факты и оставшиеся вопросы. Коммит — только по запросу пользователя.
 
 **Рекомендуемый следующий шаг:** restart и пользовательская проверка F6
-(new/select/clone и project/global restart). F5 отложен, F7 исключён; следующий scope
-согласовать после проверки. Pre-F6 файлы оставлены архивом без импорта. F2 пользователь
+(new/select/clone и project/global restart). F5 отложен, F7 исключён; минимальный F8 готов к пользовательской проверке
+(`emacs-agent-session-fork`, включая summary-only). Следующий scope согласовать
+после проверки. Pre-F6 файлы оставлены архивом без импорта. F2 пользователь
 проверил и одобрил commit; отдельной инструментированной full real-provider
 matrix нет. Исходный F4 не hot-loaded в pre-F4 Emacs; поздняя смена framing
 не меняет layouts structs.

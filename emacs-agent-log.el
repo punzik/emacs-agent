@@ -221,6 +221,8 @@ Do not select windows, steal focus, or force readers of old entries to scroll."
      (mapconcat (lambda (input) (emacs-agent-log--payload 'input input)) payload "\n\n"))
     ((or 'usage 'usage-total) (emacs-agent-usage-format payload))
     ('instructions (emacs-agent-resources-summary payload))
+    ('inherited-summary (format "Inherited compaction summary (%s archived records).\n\n%s"
+                                (plist-get payload :cut) (plist-get payload :summary)))
     ('compacted (format "Context compacted (estimated %s tokens before; %s original records summarized).\n\n%s"
                         (plist-get payload :tokens-before) (plist-get payload :cut)
                         (plist-get payload :summary)))
