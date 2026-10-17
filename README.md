@@ -451,6 +451,13 @@ All tool evaluation is serialized across sessions, including during recursive
 Emacs event loops. Tools default to the live source buffer, or the run's
 transport if it died; windows and captured point/region are not restored.
 
+The editor is shared live state: the user can edit, undo/redo or save changes
+between tool calls. History/results describe past actions, not proof of current
+buffer or disk contents. Reinspect current state before continuing and preserve
+user changes. F7's separate execution ledger/durable dispatch gate was excluded;
+existing audit remains best-effort, with no automatic replay after interruption.
+See [ADR-0013](docs/adr/0013-interactive-editor-no-tool-ledger.md).
+
 ## Conversations (F6)
 
 Multiple independent conversations share each project/global scope:

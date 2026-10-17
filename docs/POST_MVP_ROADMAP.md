@@ -174,9 +174,12 @@ Provider usage полезен как опорное измерение, но д�
 без повторного исполнения. Intent без outcome означает неизвестные эффекты.
 Storage не гарантирует exactly-once для файлов, Emacs или внешних процессов.
 
-Это полезное будущее улучшение нашего общего `interrupted`. Но Pigo требует
-успешного сохранения intent перед dispatch, а наш autosave — best-effort.
-Изменение этой политики требует явного согласования.
+Это описание Pigo, **не принятый план для нашего помощника**. Пользователь
+исключил F7: редактор разделён с пользователем, который может изменить, отменить
+или сохранить результат независимо от вызова. Ledger фиксировал бы прошлое
+выполнение, но не актуальное состояние. Сохраняем best-effort audit, fresh reads,
+проверки tick/OLD и отсутствие автоматического повтора после прерывания.
+Решение: [ADR-0013](adr/0013-interactive-editor-no-tool-ledger.md).
 
 ### 3.7. Resources — данные, capabilities — явные сведения
 
@@ -215,7 +218,6 @@ reasoning не управляет генерацией. Нельзя угады�
 | Context usage + manual/automatic compaction | Длинные разговоры без переполнения | F4 |
 | Agent Skills, lazy loading и resource inspection | Переиспользование специализированных инструкций | F5 |
 | Несколько именованных диалогов, поиск, clone | Не смешивать независимые задачи одного проекта | F6 |
-| Tool intent/outcome и recovery inspection | Понятнее последствия сбоя в середине инструмента | F7 |
 | Branches, bookmarks, продолжение из прошлого | Альтернативные решения без удаления истории | F8 |
 | Model selection, declared thinking, diagnostics/export | Контроль конфигурации и наблюдаемость | Отдельные небольшие этапы после выбора пользователя |
 
@@ -706,22 +708,19 @@ project selection и отсутствие reload duplicates. Независим�
 не нашёл подтверждённых F6 проблем. Пользовательский live F6 smoke ещё отдельно;
 новые structs в рабочий Emacs не hot-loaded, нужен restart.
 
-### F7 — Tool execution ledger и разбор прерываний
+### F7 — Исключён: tool execution ledger
 
-**Работа:**
+Пользователь исключил этот этап из обязательного плана: это интерактивный
+помощник в общем редакторе, не автономный исполнитель. Пользователь может
+вручную изменить/отменить/сохранить результат; прошлый tool outcome не доказывает
+актуальное состояние. Отдельные intent/outcome и durable dispatch gate не нужны
+без реального сценария, оправдывающего усложнение.
 
-1. Согласовать persistence policy: best-effort audit либо обязательное durable
-   checkpoint перед dispatch, а также поведение при disabled autosave.
-2. Ввести отдельные prepared intent и completed outcome со стабильной связью
-   с call/run; фиксировать неизвестный исход, не синтезировать успешный result.
-3. Если outcome сохранён, восстановить недостающее model result без вычисления;
-   если outcome отсутствует — показать explicit inspection/recovery pathway.
-4. Не обещать rollback/exactly-once и не дедуплицировать разные user actions
-   только по совпадающему тексту выражения.
-
-**Готово:** fault injection до dispatch, после effects, после outcome и до
-model result; каждый тест считает реальные eval invocations. Restart ничего
-не исполняет; обязательный failed intent write не допускает dispatch.
+Остаются текущий best-effort audit, native undo, явный save, fresh reads и
+проверки tick/OLD. После прерывания ничего не повторяется автоматически;
+продолжение требует проверки текущих буферов/файлов, а не доверия старому result
+или summary. Это не обещание exactly-once/rollback. Нумерация F8 сохраняется.
+См. [ADR-0013](adr/0013-interactive-editor-no-tool-ledger.md).
 
 ### F8 — Ветки и bookmarks
 
@@ -786,7 +785,7 @@ late callbacks и независимость старой ветви; UI явн�
 | F4 | Auto compaction default/окно модели | Начать с manual + opt-in auto; окно задаётся явно/из проверенных metadata |
 | F5 | YAML/parser dependency и precedence | Совместимость Agent Skills, bounded data parsing, ошибки duplicates одного уровня |
 | F6/F8 | Schema/migration и активные mutations | F6: schema 3 без миграций, legacy archives не импортируются; mutations только idle. F8 согласуется отдельно |
-| F7 | Неуспешный durable intent checkpoint | В строгом режиме не dispatch; выбор строгого режима/default согласовать отдельно |
+| F7 | Tool execution ledger | Исключён пользователем: общий интерактивный редактор; актуальное состояние проверяется заново, без durable dispatch gate |
 
 Remote resources не должны неявно запускать длительное TRAMP discovery только
 ради status rendering. Scope/provider/settings нельзя менять через resource
@@ -818,7 +817,7 @@ loading. Любые новые пользовательские настройк
    проверенные факты и оставшиеся вопросы. Коммит — только по запросу пользователя.
 
 **Рекомендуемый следующий шаг:** restart и пользовательская проверка F6
-(new/select/clone и project/global restart). F5 отложен; следующий scope
+(new/select/clone и project/global restart). F5 отложен, F7 исключён; следующий scope
 согласовать после проверки. Pre-F6 файлы оставлены архивом без импорта. F2 пользователь
 проверил и одобрил commit; отдельной инструментированной full real-provider
 matrix нет. Исходный F4 не hot-loaded в pre-F4 Emacs; поздняя смена framing
