@@ -126,7 +126,8 @@ Closing the buffer does not cancel the run."
   (setq-local header-line-format
               '(:eval (when emacs-agent-session--owner
                         (let ((run (emacs-agent-session-active-run emacs-agent-session--owner)))
-                          (format " Agent: %s | queued: %d | inputs: %d"
+                          (format " Agent %s: %s | queued: %d | inputs: %d"
+                                  (emacs-agent--session-name emacs-agent-session--owner)
                                   (cond ((emacs-agent-session-compaction-job emacs-agent-session--owner) 'compacting)
                                         (run (emacs-agent-run-status run)) (t 'idle))
                                   (length (emacs-agent-session-pending-runs emacs-agent-session--owner))
@@ -134,11 +135,14 @@ Closing the buffer does not cancel the run."
 
 (defun emacs-agent--session-name (session)
   "Return a readable collision-resistant name for SESSION."
-  (let ((root (emacs-agent-session-project-root session)))
-    (if root
-        (format "%s#%s" (file-name-nondirectory (directory-file-name root))
-                (substring (secure-hash 'sha256 root) 0 10))
-      "global")))
+  (let* ((root (emacs-agent-session-project-root session))
+         (scope (if root
+                    (format "%s#%s" (file-name-nondirectory (directory-file-name root))
+                            (substring (secure-hash 'sha256 root) 0 10))
+                  "global")))
+    (format "%s/%s#%s" scope (if (string-empty-p (or (emacs-agent-session-name session) ""))
+                                     "conversation" (emacs-agent-session-name session))
+            (substring (secure-hash 'sha256 (emacs-agent-session-id session)) 0 10))))
 
 (defun emacs-agent--log-buffer (session)
   "Return SESSION's live journal buffer, creating it if needed."

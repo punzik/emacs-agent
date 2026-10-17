@@ -10,7 +10,7 @@
 (require 'emacs-agent-store)
 (require 'emacs-agent-usage)
 
-(declare-function emacs-agent-gptel--history "emacs-agent-gptel" (run &optional policy))
+(declare-function emacs-agent-gptel--history "emacs-agent-gptel" (run &optional policy omit-summary))
 (declare-function emacs-agent-gptel--live-p "emacs-agent-gptel" (run))
 (declare-function emacs-agent-gptel--finish "emacs-agent-gptel" (run status &optional detail))
 (declare-function emacs-agent-gptel--start-next "emacs-agent-gptel" (session))
@@ -45,8 +45,9 @@
                (eql (plist-get anchor :cut) (or (plist-get (emacs-agent-session-compaction session) :cut) 0)))
       anchor)))
 
-(defun emacs-agent-compact--wire (run &optional end)
-  "Serialize RUN's projection without HTTP; END bounds the original prefix."
+(defun emacs-agent-compact--wire (run &optional end omit-summary)
+  "Serialize RUN's projection without HTTP; END bounds the original prefix.
+OMIT-SUMMARY keeps the cut/snapshots but excludes separately framed old summary."
   (when end
     (let ((session (copy-emacs-agent-session (emacs-agent-run-session run))))
       (setq run (copy-emacs-agent-run run))
@@ -58,7 +59,8 @@
            (setq-local gptel-track-response t gptel-mode nil
                        gptel-backend (emacs-agent-run-backend run)
                        gptel-model (emacs-agent-run-model run))
-           (gptel--parse-list-and-insert (emacs-agent-gptel--history run))
+           (gptel--parse-list-and-insert
+            (emacs-agent-gptel--history run (emacs-agent-run-context-policy run) omit-summary))
            (goto-char (point-max))
            (list :model (format "%s" (emacs-agent-run-model run))
                  :messages (vconcat (gptel--parse-buffer (emacs-agent-run-backend run) nil)))))
@@ -160,7 +162,7 @@
 (defun emacs-agent-compact--live-p (job)
   "Whether JOB still owns its session's cancellable summary request."
   (let ((session (emacs-agent-run-session (emacs-agent-compact-job-run job))))
-    (and (eq (gethash (emacs-agent-session-key session) emacs-agent-session--registry) session)
+    (and (emacs-agent-session-registered-p session)
          (eq (emacs-agent-session-compaction-job session) job)
          (eq (emacs-agent-compact-job-state job) 'requesting))))
 
@@ -265,6 +267,7 @@
   "Summarize SOURCE-RUN's session, retaining KEEP tokens, without any tool use.
 OWNER and RESUME describe an automatic pre-generation pause; nil means manual.
 INSTRUCTIONS is optional additional summary focus, not a system replacement."
+  (unless owner (emacs-agent-session--unlocked))
   (let* ((session (emacs-agent-run-session source-run))
          (config (emacs-agent-compact--config source-run))
          (plan (emacs-agent-compaction-plan (emacs-agent-session-messages session)
@@ -314,13 +317,13 @@ INSTRUCTIONS is optional additional summary focus, not a system replacement."
                           gptel-use-tools nil gptel-tools nil gptel-use-context nil
                           gptel-track-response t gptel--num-messages-to-send nil)
               (gptel-request
-                  (emacs-agent-compaction-transcript
-                   (plist-get (emacs-agent-compact--wire source-run (plist-get plan :cut)) :messages)
-                   (plist-get config :window))
+                  (emacs-agent-compaction-prompt
+                   (emacs-agent-compaction-transcript
+                    (plist-get (emacs-agent-compact--wire source-run (plist-get plan :cut) t) :messages)
+                    (plist-get config :window))
+                   (plist-get plan :summary) instructions)
                 :buffer buffer :stream nil :fsm fsm :transforms '(ignore)
-                :system (concat emacs-agent-compaction-system-prompt
-                                (when (and instructions (not (string-empty-p (string-trim instructions))))
-                                  (concat "\nFocus additionally on: " (emacs-agent-compaction-clip instructions 4096))))
+                :system emacs-agent-compaction-system-prompt
                 :callback (apply-partially #'emacs-agent-compact--callback job)))))
       ((error quit) (emacs-agent-compact--finish job (if (eq (car err) 'quit) 'cancelled 'failed)
                                                (error-message-string err))))

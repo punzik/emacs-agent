@@ -1,6 +1,8 @@
 # ADR-0010: Pigo-style context budget and compaction
 
 Status: implemented and verified offline; user requested the pigo approach, retaining KISS.
+Summary request wording/framing was later superseded by
+[ADR-0011](0011-pi-summary-request-framing.md), without changing this lifecycle.
 
 ## Reference and scope
 

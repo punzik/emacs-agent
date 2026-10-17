@@ -38,7 +38,7 @@ Only the test source buffer is used; model is asked for no files/shell/edits."
   (let* ((root (file-name-as-directory (file-truename default-directory)))
          (session (make-emacs-agent-session :id "history-smoke" :key 'history-smoke :project-root root))
          (source (get-buffer-create "*emacs-agent-history-smoke*")))
-    (puthash 'history-smoke session emacs-agent-session--registry)
+    (puthash (emacs-agent-session-id session) session emacs-agent-session--registry)
     (with-current-buffer source
       (setq-local default-directory root)
       (erase-buffer)

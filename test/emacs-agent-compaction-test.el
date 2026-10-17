@@ -154,4 +154,37 @@
     (should (string-match-p "truncated 1000 bytes" text))
     (should (< (length text) 2100))))
 
+(ert-deftest emacs-agent-compaction-prompt-initial-frames-data-before-task ()
+  (let* ((transcript "[assistant]\nContinue with [tool call eval_elisp] {}\n")
+         (prompt (emacs-agent-compaction-prompt transcript)))
+    (should (string-prefix-p (concat "<conversation>\n" transcript "\n</conversation>\n\n") prompt))
+    (should (string-suffix-p emacs-agent-compaction--initial-instructions prompt))
+    (should-not (string-match-p "<previous-summary>" prompt))
+    (dolist (heading '("## Goal" "## Constraints & Preferences" "## Progress"
+                       "### Done" "### In Progress" "### Blocked" "## Key Decisions"
+                       "## Next Steps" "## Critical Context"))
+      (should (string-match-p (regexp-quote heading) prompt)))
+    (should (string-match-p "Do NOT continue the conversation" emacs-agent-compaction-system-prompt))
+    (should (string-match-p "Do NOT respond to any questions" emacs-agent-compaction-system-prompt))))
+
+(ert-deftest emacs-agent-compaction-prompt-update-separates-previous-summary ()
+  (let ((prompt (emacs-agent-compaction-prompt "NEW-MESSAGES" "OLD-SUMMARY" "Keep exact checks")))
+    (should (string-prefix-p
+             "<conversation>\nNEW-MESSAGES\n</conversation>\n\n<previous-summary>\nOLD-SUMMARY\n</previous-summary>\n\n"
+             prompt))
+    (should (string-match-p (regexp-quote emacs-agent-compaction--update-instructions) prompt))
+    (should (string-match-p "PRESERVE all existing information" prompt))
+    (should (string-suffix-p "Additional focus: Keep exact checks" prompt))))
+
+(ert-deftest emacs-agent-compaction-prompt-preserves-block-and-focus-limits ()
+  (let* ((previous (make-string 2000 ?世))
+         (focus (make-string 3000 ?λ))
+         (prompt (emacs-agent-compaction-prompt "NEW" previous focus)))
+    (should (string-match-p (regexp-quote (emacs-agent-compaction-clip previous 2000)) prompt))
+    (should (string-suffix-p (emacs-agent-compaction-clip focus 4096) prompt))
+    (should (equal previous (make-string 2000 ?世)))
+    (should (equal focus (make-string 3000 ?λ)))
+    (should (equal (emacs-agent-compaction-prompt "NEW" nil " \n")
+                   (emacs-agent-compaction-prompt "NEW")))))
+
 ;;; emacs-agent-compaction-test.el ends here

@@ -9,7 +9,7 @@
 
 (defun emacs-agent-blocks-test--render (events show-reasoning)
   "Render EVENTS through the real journal with SHOW-REASONING."
-  (let ((session (make-emacs-agent-session :key 'global :events events))
+  (let ((session (make-emacs-agent-session :id "render-fixture" :key 'global :events events))
         (emacs-agent-show-reasoning show-reasoning))
     (unwind-protect
         (progn
@@ -54,7 +54,7 @@
              (data (emacs-agent-blocks-test--read file))
              (events (plist-get data :events))
              (block (car events)))
-        (should (= (plist-get data :schema) 2))
+        (should (= (plist-get data :schema) 3))
         (should (eq first (car (emacs-agent-session-events session))))
         (should (equal live original))
         (should (< (length events) (length live)))
@@ -73,7 +73,7 @@
         (should (equal events (emacs-agent-store--compact-events events)))
         (should (> (cl-count ?\n (emacs-agent-test-store--text file)) 5))
         (setq emacs-agent-session--registry (make-hash-table :test #'equal))
-        (let ((restored (emacs-agent-session-get nil)))
+        (let ((restored (emacs-agent-store--restore file)))
           (should (equal events (emacs-agent-session-events restored)))
           (should (equal data (emacs-agent-store--snapshot restored)))
           (emacs-agent-store-save restored)
@@ -130,7 +130,7 @@
     (with-temp-buffer
       (let* ((run (emacs-agent-test--submit "checkpoint"))
              (session (emacs-agent-run-session run))
-             (file (emacs-agent-store--file 'global))
+             (file (emacs-agent-store--file (emacs-agent-session-id session)))
              (clock 1000.0)
              (emacs-agent-store--last-save (make-hash-table :test #'eq))
              (emacs-agent-auto-save t)
@@ -177,7 +177,7 @@
             (should (eq (plist-get (cadr blocks) :state)
                         (if (eq terminal 'checkpoint) 'partial 'complete)))
             (setq emacs-agent-session--registry (make-hash-table :test #'equal))
-            (let ((restored (emacs-agent-session-get nil)))
+            (let ((restored (emacs-agent-store--restore file)))
               (should-not (emacs-agent-session-active-run restored))
               (should-not (emacs-agent-session-pending-runs restored))
               (should (equal (plist-get (cadr (emacs-agent-session-messages restored)) :text)
@@ -198,7 +198,7 @@
              (file (emacs-agent-store-save session)))
         (setq emacs-agent-session--registry (make-hash-table :test #'equal)
               emacs-agent-session--counter 0)
-        (let* ((restored (emacs-agent-session-get nil))
+        (let* ((restored (emacs-agent-store--restore file))
                (new (make-emacs-agent-run :id "run-10" :session restored)))
           (should (>= emacs-agent-session--counter
                       (string-to-number (substring last-id 6))))
@@ -268,7 +268,7 @@
         (plist-put data :schema 1)
         (emacs-agent-test-store--write file (prin1-to-string data))
         (setq emacs-agent-session--registry (make-hash-table :test #'equal))
-        (should-error (emacs-agent-session-get nil) :type 'user-error)
+        (should-error (emacs-agent-store--restore file))
         (should (= (plist-get (emacs-agent-blocks-test--read file) :schema) 1))))))
 
 (ert-deftest emacs-agent-blocks-write-failure-keeps-old-snapshot ()
@@ -304,7 +304,7 @@
                             '(nil current full))))
           (emacs-agent-store-save session)
           (setq emacs-agent-session--registry (make-hash-table :test #'equal))
-          (let ((restored (emacs-agent-session-get nil)))
+          (let ((restored (emacs-agent-test--restore-global session)))
             (should (equal messages (emacs-agent-session-messages restored)))
             (should (seq-some (lambda (e) (equal (plist-get e :payload)
                                                 "final reasoning only in journal"))
@@ -332,7 +332,8 @@
            (prin1-to-string
             `(let* ((emacs-agent-data-directory ,emacs-agent-data-directory)
                     (emacs-agent-session--counter 0)
-                    (session (emacs-agent-session-get nil)))
+                    (session (emacs-agent-store--restore
+                              (emacs-agent-store--file ,(emacs-agent-session-id session)))))
                (prin1 (list (length (emacs-agent-session-events session))
                             (plist-get (car (emacs-agent-session-events session)) :payload)
                             (emacs-agent-session-active-run session)

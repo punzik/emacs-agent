@@ -119,8 +119,10 @@ Includes text, context and instructions, not backend objects or credentials."
 
 (defun emacs-agent-input--session (input)
   "Return INPUT's registered session, rejecting stale or retired handles."
+  (when emacs-agent-session--mutation
+    (user-error "Conversation mutation in progress"))
   (let ((session (emacs-agent-run-session (emacs-agent-input-run input))))
-    (unless (and (eq (gethash (emacs-agent-session-key session) emacs-agent-session--registry) session)
+    (unless (and (emacs-agent-session-registered-p session)
                  (memq input (emacs-agent-session-inputs session)))
       (user-error "Stale pending input; reopen its session"))
     session))
@@ -140,6 +142,8 @@ Includes text, context and instructions, not backend objects or credentials."
 
 (defun emacs-agent-input-prepare (run kind &optional target)
   "Freeze RUN configuration once; create bounded KIND input targeting TARGET."
+  (when (and emacs-agent-session--mutation (not (emacs-agent-run-input run)))
+    (user-error "Conversation selection is being saved; submit again afterward"))
   (or (emacs-agent-run-input run)
       (let* ((source (emacs-agent-run-source-buffer run))
              (input (make-emacs-agent-input
@@ -187,7 +191,7 @@ Includes text, context and instructions, not backend objects or credentials."
   "Prepare TEXT with CONTEXT at SOURCE/WINDOW for TARGET, without changing it.
 A completed target converts to FIFO; cancelled/failed targets retain recovery."
   (let* ((session (emacs-agent-run-session target))
-         (_ (unless (eq (gethash (emacs-agent-session-key session) emacs-agent-session--registry) session)
+         (_ (unless (emacs-agent-session-registered-p session)
               (user-error "Stale target session")))
          (run (emacs-agent-session-prepare session text context source window))
          (input (emacs-agent-input-prepare run 'steer target)))

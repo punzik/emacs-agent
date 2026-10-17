@@ -11,6 +11,8 @@
   "Run BODY with mocked HTTP entry point and real gptel tool objects."
   (declare (indent 0) (debug t))
   `(let ((emacs-agent-session--registry (make-hash-table :test #'equal))
+         (emacs-agent-session--selected (make-hash-table :test #'equal))
+         (emacs-agent-session--mutation nil)
          (emacs-agent-session--counter 0)
          (emacs-agent-data-directory (make-temp-file "agent-adapter-test-" t))
          (emacs-agent-auto-save nil)
@@ -44,6 +46,13 @@
                     (kill-buffer (emacs-agent-session-log-buffer session))))
                 emacs-agent-session--registry)
        (delete-directory emacs-agent-data-directory t))))
+
+(defun emacs-agent-test--restore-global (session)
+  "Explicitly reopen SESSION by ID, without selecting an old global default."
+  (let ((id (emacs-agent-session-id session)))
+    (remhash id emacs-agent-session--registry)
+    (remhash 'global emacs-agent-session--selected)
+    (emacs-agent-store--restore (emacs-agent-store--file id))))
 
 (defun emacs-agent-test--submit (text &optional root)
   "Create and submit TEXT from the current buffer for ROOT."

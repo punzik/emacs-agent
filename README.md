@@ -129,8 +129,8 @@ does not require gptel. Journal shortcuts: `C-c C-s` steer, `C-c C-p` pending.
 
 Offline coverage includes real pinned streaming/non-streaming parsing with mocked
 HTTP, lifecycle/reentrancy, bounds and recovery. Live F2 smoke is still separate.
-When updating an already running pre-F2 Emacs, restart before using the new state
-structs; old schema-2 snapshots remain readable without migration. See
+F2 introduced state structs requiring restart on upgrade. F6 later replaced the
+storage namespace: pre-F6 snapshots are not imported (see Persistence below). See
 [ADR-0007](docs/adr/0007-steering-boundaries.md).
 
 Snapshot autosave uses fast per-record Lisp serialization, not recursive
@@ -250,6 +250,15 @@ also cancels in-flight compaction. Queued asks wait for it. Manual compaction
 always persists before publishing; automatic compaction requires autosave so
 turning autosave off does not unexpectedly write history.
 
+Summary requests now use Pi's dedicated summarizer system prompt, explicit
+`<conversation>` / `<previous-summary>` blocks and initial/update checkpoint
+instructions **after** the data. Six sections are requested: Goal, Constraints
+& Preferences, Progress, Key Decisions, Next Steps, Critical Context. Previous
+summary appears once in its separate block (with the existing 2000-byte limit).
+Focus follows the template. Headings are requested, not validated; no retry or
+new acceptance rule was added. Existing saved summaries are not rewritten.
+See [ADR-0011](docs/adr/0011-pi-summary-request-framing.md).
+
 Original messages, snapshots, tool pairs and the journal remain intact. Only the
 model projection changes to summary + recent suffix. Retention is a target;
 boundary adjustment can retain less. Repeated compaction includes the previous
@@ -270,9 +279,11 @@ an interrupted summary automatically. Auto summary HTTP usage belongs to the
 owning run; manual summary has its own audit/usage run.
 
 **Restart Emacs after updating from pre-F4 code:** session/run structures changed;
-do not hot-load the new structs into existing sessions. 224 offline ERT and
-warnings-as-errors compilation pass; F4 has not been exercised against a real
-provider or hot-loaded into the user's Emacs. See
+do not hot-load the new structs into existing sessions. 227 offline ERT and
+warnings-as-errors compilation pass. The user exercised manual compaction;
+one isolated tool-free probe of the new framing on `aiserver/main` produced a
+structured summary, with a remaining factual error. This is not a full live
+lifecycle matrix or a guarantee of summary quality. See
 [ADR-0010](docs/adr/0010-pigo-style-compaction.md).
 
 ### Reading live buffers (F0)
@@ -440,17 +451,62 @@ All tool evaluation is serialized across sessions, including during recursive
 Emacs event loops. Tools default to the live source buffer, or the run's
 transport if it died; windows and captured point/region are not restored.
 
+## Conversations (F6)
+
+Multiple independent conversations share each project/global scope:
+
+- `M-x emacs-agent-session-new`: save the previous conversation and select an empty one;
+  `C-u` asks for an optional name.
+- `M-x emacs-agent-session-rename`: save a name; empty clears it. Names need not be unique.
+- `M-x emacs-agent-session-select`: choose a conversation **in the current scope**.
+- `M-x emacs-agent-session-search`: regexp search over local names/history/summary/events
+  across scopes, without a model, external artifact reads or an index.
+- `M-x emacs-agent-session-clone`: select an independent copy; `C-u` asks for a name.
+
+Journal labels include name, scope and a short conversation ID. In
+`emacs-agent-session-list`, `Current` marks the in-process scope selection.
+**RET only opens a journal; it does not select it.** Explicit new/select/clone
+focus the chosen journal. Commands in a nonselected
+journal explicitly target its owner; working buffers use their scope's selection.
+Ask captures an existing conversation before minibuffer entry, never retargeting
+silently if selection changes while typing.
+
+Each new Emacs process starts a **fresh global conversation** on first implicit
+use. Old F6 globals can be explicitly selected for that process, but are never
+implicitly restored next time. Project selections persist. Showing journals,
+listing/searching, or reloading the same package version does not create duplicate
+globals or select archives.
+
+New/select/clone require involved conversations idle: no active/paused run,
+ordinary queue, compaction or prepared/queued input. Withdrawn recovery may stay
+with its original conversation. Rename requires its target idle. Save/pointer
+failure leaves the old choice and history intact. A written candidate may remain
+unselected if pointer persistence fails. Explicit conversation operations save
+regardless of `emacs-agent-auto-save`; initial project identity/selection also
+persists even when chat autosave is off.
+
+Clone copies archival messages/events and compaction with source-ID provenance,
+not pending recovery, queues, usage anchor, source/backend/transport handles or
+execution authority. Historical tool IDs/reasoning stay paired; nothing executes.
+F3 paths remain references to the same original files. Invoking new/select/clone
+from a working buffer explicitly binds that buffer for future journal asks;
+cloning from an archive alone does not inherit its old execution source.
+
+**Restart Emacs after this update**, since struct/registry meanings changed.
+No migration: pre-F6 `global.eld` / `project-*.eld` stay untouched but do not appear
+in the F6 catalog. See [ADR-0012](docs/adr/0012-multiple-conversations.md).
+
 ## Persistence and recovery
 
 `emacs-agent-data-directory` defaults to `emacs-agent/` below
-`user-emacs-directory`, not the active project. Each session has an independent
-versioned `.eld` data file: `global.eld` or a canonical-root hash. Files are
-read as Lisp **data**, never loaded/evaluated as code. Writes use a same-directory
-temporary file and atomic rename (new directory 0700, snapshot files 0600).
-Current format is **schema 2**; deep-alpha schema 1 is unsupported and no
-migration is provided. For a fresh test, choose a new private
-`emacs-agent-data-directory` before asking/loading sessions; existing archives
-are not automatically deleted or converted.
+`user-emacs-directory`, not the active project. **Schema 3** conversations use
+`conversations/<hash-of-conversation-id>.eld`; project pointers use
+`selections/<hash-of-root>.eld`. There is no persisted global selection.
+Files are read as Lisp **data**, never loaded/evaluated as code. Writes use a
+same-directory temporary file and atomic rename (new directories 0700, files
+0600). Schema 1/2 and old root-level snapshots are not read/imported or rewritten.
+Old files can stay in the data directory as untouched archives. F3 full-output
+files still use the separate `tool-output/` directory.
 No encryption is provided. If your Emacs directory is tracked in dotfiles,
 ignore this subdirectory or configure an untracked/private location.
 
@@ -475,7 +531,8 @@ and delivery times are intentionally not retained. Reasoning remains stored
 regardless of display policy. Restored blocks render directly, not as recreated
 token events, and new events can still be appended normally.
 
-Snapshots are pretty-printed Lisp data (newlines inside strings stay escaped).
+Snapshots use fast per-record `prin1` serialization, not recursive pretty-print
+layout (newlines inside strings stay escaped).
 Synthetic fixture: 4,002 events become 4; a roughly 460 KB schema-1-style
 snapshot becomes 11 KB, about 42x smaller. This fixture has no model messages;
 real savings depend on the session's text/tools/history. Saving still copies
@@ -484,8 +541,9 @@ or a constant-time checkpoint. See [ADR-0003](docs/adr/0003-durable-streaming-bl
 
 `M-x emacs-agent-session-list` loads independent snapshots and shows sessions;
 `RET` opens a read-only journal, `g` refreshes. Asking/showing from a project
-or global buffer lazily restores that canonical session. Existing in-memory
-sessions are never overwritten by a disk refresh. Backend/model are chosen
+lazily restores its selected conversation; global starts fresh in each process.
+Catalog loading only registers conversations, never selects them. Existing
+in-memory conversations are never overwritten by a disk refresh. Backend/model are chosen
 from the current gptel configuration on each new run; stored settings are
 an audit, not code that alters user configuration.
 
@@ -501,10 +559,10 @@ already-open buffers when available, otherwise remain unavailable. No file is
 automatically opened; no buffer/window/process/marker/closure/backend credential
 object or HTTP handle is restored.
 
-A corrupt/unsupported file does not prevent other sessions from loading.
-Direct access to its session fails with its path and an explicit error;
-it is not silently replaced with an empty session. Unsupported schema/adapter
-versions require a separate data directory or manually archiving the file;
+A corrupt/unsupported file in the new namespace does not prevent other
+conversations from loading. Direct selected-target restore fails explicitly;
+it is not silently replaced with an empty session. Unsupported files inside the
+new namespace require a separate data directory or manually archiving the file;
 there is no compatibility reader or migration command. Snapshots are plaintext and can contain secrets
 from prompts, reasoning and tool results; do not publish them. Concurrent
 writers from multiple Emacs processes are not supported (last rename wins).
@@ -523,7 +581,7 @@ normal minibuffer hooks/keymaps; the agent does not supply a custom editor.
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 224 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 252 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh

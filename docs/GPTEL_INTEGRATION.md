@@ -492,6 +492,61 @@ committed logs. The second mode inherited the first turn's history, so these
 numbers validate accounting only, not comparative mode efficiency or savings
 against Pi. A fresh same-task/model/cache-state benchmark remains optional.
 
+## Post-MVP F6: conversations without migration
+
+F5 is deferred. F6 separates immutable global/project scope from conversation ID.
+The registry is ID→object; scope→selected-ID is a separate map. Run, input and
+summary callback liveness uses registration/object identity, not selection. A
+nonselected journal remains an explicit target; opening it never selects it.
+Working-buffer ask captures an existing target before reading the minibuffer.
+
+New `emacs-agent-session-new`, `-rename`, `-select`, `-search` and `-clone` commands use
+existing journals. Selection is scope-local; search/list inspect all scopes
+without a model/backend/index or following F3 artifact references. Name is only
+metadata; IDs distinguish duplicate names and same-basename roots. List RET
+shows without selection. New/select/clone require involved conversations idle;
+rename requires its own idle target. Prepared/queued inputs, paused runs and
+compaction count as busy; withdrawn recovery stays with the original archive.
+
+Schema **3** uses `conversations/<hash-ID>.eld` and project selection pointers
+in `selections/<hash-root>.eld`. Per explicit user decision, root-level legacy
+`global.eld`/`project-*.eld` are untouched but never imported, listed or selected.
+There is no migration or schema-1/2 reader. The remaining milestone sections
+below describe their historical schemas, not current compatibility promises.
+Data-only reading, validation-before-registration, private 0600/0700 modes,
+atomic rename, linear writer and inert restart recovery remain.
+
+The first implicit global use in each Emacs process creates a fresh conversation;
+loading catalogs does not select old globals. Explicit old-global selection lasts
+for that process, not the next restart. Project selection restores from its
+validated pointer. Missing/corrupt targets fail explicitly. Normal autosave writes
+only a conversation, never a pointer. Initial project identity/pointer is durable
+even with autosave off, but does not force later chat checkpoints.
+
+New/select/clone save old/source/candidate and project pointer before publishing.
+Failure leaves the prior in-memory choice/history/queue unchanged; a durable
+candidate can remain unselected. Rename saves a preview before changing metadata.
+A short mutation lock rejects reentrant new admissions and explicit recovery
+before ledger/source mutation. Already accepted F2 final-boundary work in other
+conversations is not blocked. There is no implicit cancel, queue transfer or
+cross-project reassignment.
+
+Clone allocates a fresh ID with source-ID/time provenance; deep-copies messages,
+events and compaction, rewriting event session IDs while preserving historical
+run/input/tool IDs. It clears inputs/queues, usage anchor and source/backend/
+transport/summary handles. Nothing executes; old F3 paths remain references.
+The UI may freshly bind an explicit working buffer after selecting a conversation,
+never deriving execution authority from copied event payloads.
+
+252 ERT and warnings-as-errors compilation/diff-check pass. Fresh backend-free
+subprocess tests prove global restart uniqueness, explicit old-global continuation,
+project selection and no reload duplicates. Real pinned-gptel dry-run/tool tests
+cover nonselected owners and cloned wire/reasoning/IDs across context policies.
+Failure injection and mutation reentrancy regressions pass. An independent
+read-only review found no supported F6 issues; it did not run the full suite.
+No real-provider F6 smoke or user-Emacs hot-load was performed. Restart is required.
+See [ADR-0012](adr/0012-multiple-conversations.md).
+
 ## Post-MVP F4: pigo-style compaction
 
 `emacs-agent-compaction.el` contains provider-independent config, estimates,
@@ -507,7 +562,11 @@ and one budget recheck. Existing TRET→WAIT delivery still owns steering claims
 and transport-launch rollback; inputs arriving during summary are caught up.
 Canonical paired records, tool counts and side effects are never replayed.
 
-Summary uses fixed factual-continuity system text, optional bounded focus, the
+Summary uses Pi-style summarizer system text, `<conversation>` and separate
+`<previous-summary>` blocks, followed by initial/update checkpoint instructions
+and optional bounded focus. Requested Markdown sections are not validated;
+existing summaries are not rewritten. See
+[ADR-0011](adr/0011-pi-summary-request-framing.md). The request uses the
 selected/frozen model/backend, nonstream public text and **no tools**. Private
 WAIT strips tool-related native parameters; private TOOL rejects dispatch.
 Transcript uses 2000-byte UTF-8-safe block prefixes and at most
@@ -541,10 +600,13 @@ shows compacting. No new advertised tool, tokenizer dependency, provider-overflo
 recovery loop, branch UI or automatic raw-history deletion. Auto compaction
 requires autosave; manual compaction explicitly persists even if autosave is off.
 
-224 offline ERT, real pinned-gptel dry-run FSM/wire tests, compilation with
+227 offline ERT, real pinned-gptel dry-run FSM/wire tests, compilation with
 warnings-as-errors and diff-check pass. A separate read-only lifecycle review
-reported no supported findings. F4 had no real-provider smoke or user-Emacs
-hot-load; session/run structs changed, so restart before trying it. Details:
+reported no supported findings. Initial F4 had no assistant-driven real-provider
+smoke; the user subsequently exercised manual compaction. One separate tool-free
+live probe of the new framing produced structured notes, not a perfect factual
+summary. This is not a full live lifecycle matrix. Pre-F4 structs still require
+restart; the framing change does not alter them. Details:
 [ADR-0010](adr/0010-pigo-style-compaction.md).
 
 ## Post-MVP F3: simple full-output files
@@ -670,7 +732,8 @@ See [ADR-0005](adr/0005-root-project-instructions.md).
 
 ## Post-MVP F0b: durable streaming blocks (schema 2)
 
-The current store writes **schema 2**, readable Lisp data with one top-level
+The F0b milestone wrote **schema 2** (F6 now writes schema 3 in a new namespace),
+readable Lisp data with one top-level
 field / message / event / run record per line. Recursive `pp` layout was removed
 from synchronous autosave: on a private ~391 KB real-session copy, full atomic
 save measured ~976 ms before and ~14 ms afterward (3 repetitions, no GC).
@@ -733,7 +796,7 @@ name/file and durable run audit fields. Backend name/model and agent request
 settings are recorded; backend credential objects, HTTP handles, functions,
 buffers/windows/markers/processes are never serialized. Data is read, never
 loaded/evaluated as code. This stage originally required explicit migration
-for unsupported schema/adapter files; current deep-alpha schema 2 deliberately
+for unsupported schema/adapter files; the later deep-alpha schema 2 deliberately
 provides no migration or compatibility reader (see F0b above).
 
 Writes use a same-directory 0600 temporary file and rename; newly created

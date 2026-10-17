@@ -31,9 +31,7 @@ any execution.  Counts include evaluations returning errors or quit."
 
 (defun emacs-agent-gptel--live-p (run)
   "Whether RUN still owns its session and may receive callbacks."
-  (and (eq (gethash (emacs-agent-session-key (emacs-agent-run-session run))
-                    emacs-agent-session--registry)
-           (emacs-agent-run-session run))
+  (and (emacs-agent-session-registered-p (emacs-agent-run-session run))
        (eq run (emacs-agent-session-active-run (emacs-agent-run-session run)))
        (memq (emacs-agent-run-status run) '(requesting streaming tool-running paused))))
 
@@ -170,11 +168,13 @@ Additional user inputs in that group require a unique :input-id."
           (unless (stringp (plist-get message :text))
             (error "History text must be a string")))))))
 
-(cl-defun emacs-agent-gptel--history (run &optional (policy (emacs-agent-run-context-policy run)))
+(cl-defun emacs-agent-gptel--history (run &optional (policy (emacs-agent-run-context-policy run)) omit-summary)
   "Build RUN's gptel history using its frozen POLICY, or an explicit override.
 Filter only editor context; never edit stored records or protocol pairs.
 With `current', keep this run's input snapshots, eliding only adjacent equal
-snapshots.  Text always remains; `full' retains every captured snapshot."
+snapshots.  Text always remains; `full' retains every captured snapshot.
+OMIT-SUMMARY excludes only the previous summary text for a new summary request;
+the saved cut and explicit current-run snapshots still apply."
   (unless (memq policy '(nil current full)) (error "Invalid agent context policy: %s" policy))
   (emacs-agent-gptel--validate-history
    (emacs-agent-session-messages (emacs-agent-run-session run)))
@@ -194,10 +194,11 @@ snapshots.  Text always remains; `full' retains every captured snapshot."
             (push (emacs-agent-context-render (plist-get message :context)) contexts))
           (setq previous-context (plist-get message :context)))))
     (append
-     (when summary
+     (when (or (and summary (not omit-summary)) contexts)
        (list (list 'prompt
-                   (concat "The conversation history before this point was compacted into the following summary:\n\n<summary>\n"
-                           summary "\n</summary>"
+                   (concat (unless omit-summary
+                             (concat "The conversation history before this point was compacted into the following summary:\n\n<summary>\n"
+                                     summary "\n</summary>"))
                            (when contexts (concat "\n\n" (mapconcat #'identity (nreverse contexts) "\n\n")))))))
      (mapcar
      (lambda (message)
@@ -625,9 +626,7 @@ Slot access and state names are isolated pinned-gptel contracts."
 (defun emacs-agent-gptel-submit (run)
   "Capture source-buffer gptel configuration and schedule queued RUN.
 Each run has its own transport, callback guard, tool registry and budget."
-  (unless (eq (gethash (emacs-agent-session-key (emacs-agent-run-session run))
-                      emacs-agent-session--registry)
-              (emacs-agent-run-session run))
+  (unless (emacs-agent-session-registered-p (emacs-agent-run-session run))
     (user-error "Stale agent session; reopen from a working buffer"))
   (unless (eq (emacs-agent-run-status run) 'queued)
     (user-error "Run already started"))

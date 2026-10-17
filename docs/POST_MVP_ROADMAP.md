@@ -1,8 +1,8 @@
 # Emacs Agent после MVP: выводы из Pi/Pigo и план развития
 
-**Статус:** F0, F0b, F0c, ограниченный F1, lifecycle/UI F2, минимальный F3 и F4 реализованы;
+**Статус:** F0, F0b, F0c, ограниченный F1, lifecycle/UI F2, минимальный F3, F4 и F6 реализованы; F5 отложен;
 инструментированные live F2/F4 smoke ещё отдельно. Устранён измеренный секундный pretty-print
-autosave stall. 224 offline ERT и byte compilation с
+autosave stall. 252 offline ERT и byte compilation с
 warnings-as-errors проходят. Для буферного редактирования F0 есть пользовательский
 live smoke и подтверждение undo; отдельный live smoke F0b ещё не выполнялся.
 Остальные post-MVP этапы не реализованы.
@@ -50,26 +50,24 @@ Responses, Anthropic, Gemini и opaque replay остаются вне текущ
 она становится текущей до следующего явного выбора или restart; следующий
 запуск Emacs снова начинает новый глобальный разговор.
 
-Политика проектных сессий этим решением не меняется. Это **согласованное
-будущее поведение**, реализуемое в F6, а не описание текущего MVP, который
-пока автоматически восстанавливает единую сохранённую глобальную сессию.
+Реализовано в F6: проектный выбор сохраняется, global choice — только на запуск.
+Это относится к F6 schema-3 разговорам. Pre-F6 root-level файлы остаются
+нетронутым архивом и не импортируются по явному решению пользователя.
 
 ### 1.2. Согласованное изменение: новый разговор вручную
 
 Пользователь может явно начать новую пустую сессию в текущем global/project
-scope, не перезапуская Emacs. Для этого нужна отдельная команда (предварительное
-имя — `emacs-agent-session-new`). Новый разговор получает новый conversation ID
+scope, не перезапуская Emacs. Реализована команда `emacs-agent-session-new`. Новый разговор получает новый conversation ID
 и становится выбранным в этом scope. Старая сессия сохраняется и остаётся
 доступной в списке для просмотра и продолжения.
 
 Это не очистка/сброс истории и не clone: история старого разговора и его
 ожидающие задачи не переносятся в новый. Перед переключением старая сессия
 должна быть успешно сохранена; при ошибке записи переключение не выполняется,
-а пользователь получает понятное сообщение. Поведение при активном run
-уточняется перед F6; базовый план разрешает переключение только в idle,
-без автоматической отмены или повторного исполнения.
-
-Это требование реализуется в F6 вместе с несколькими разговорами на scope.
+а пользователь получает понятное сообщение. В F6 involved conversations должны
+быть idle: без active/paused, очереди, compaction или prepared/queued inputs.
+Withdrawn recovery остаётся у старого разговора. Нет автоматической отмены,
+переноса очереди или повторного исполнения.
 
 ## 2. Что исследовано и насколько подтверждены выводы
 
@@ -630,15 +628,24 @@ manual-first/opt-in плана: [ADR-0010](adr/0010-pigo-style-compaction.md).
    min(128 KiB, context/3) bytes с first-quarter/newest-tail. Это lossy источник,
    не гарантия сохранения всех value/error/file references. Исходные данные целы.
 
-**Проверка:** 224 ERT и warnings-as-errors compile/diff-check; production private
+Summary framing позже заменён на TypeScript Pi: отдельные conversation/previous
+blocks, initial/update instructions и checkpoint template после данных.
+[ADR-0011](adr/0011-pi-summary-request-framing.md). Без новых validators/retries,
+изменений budget/cut/acceptance или переписывания уже сохранённых summaries.
+
+**Проверка:** 227 ERT и warnings-as-errors compile/diff-check; production private
 FSM dry-run, post-whole-batch steering/cancel без повторных effects, usage anchor,
 повторная summary, malformed checkpoints, failed save, FIFO/reentrant events,
 restore без установленного gptel в свежем `emacs -Q`. Независимый read-only review
-coordinator/integration не нашёл подтверждённых проблем. Real-provider F4 smoke
-не запускался; сохранение смысла целей/ограничений ещё требует live проверки.
+coordinator/integration не нашёл подтверждённых проблем. Пользователь проверил
+manual compaction; один отдельный tool-free probe нового framing на
+`aiserver/main` дал структурированные заметки, но с фактической ошибкой. Полной
+live matrix и гарантии сохранения смысла нет.
 Structs изменились: нужен restart, не hot-load в pre-F4 пользовательский Emacs.
 
 ### F5 — Agent Skills и инспекция ресурсов
+
+**Статус:** отложен по решению пользователя; F6 выполнен раньше F5.
 
 **Работа:**
 
@@ -663,37 +670,41 @@ dry-run содержит только нужные metadata/явно выбра�
 
 ### F6 — Несколько диалогов в одном scope
 
-**Работа:**
+**Реализовано без миграций**, по явному решению пользователя:
+[ADR-0012](adr/0012-multiple-conversations.md). Старые `global.eld`/`project-*.eld`
+не переписываются, но и не загружаются/не показываются в новом каталоге.
 
-1. Отделить conversation ID от global/project scope. Хранить выбранный диалог
-   каждого scope; перейти от одного файла на root к нескольким conversation IDs.
-   Для global при каждом новом запуске Emacs выбирать новый пустой разговор;
-   сохранённый выбор прошлого запуска не восстанавливать автоматически.
-2. Добавить new/name/select/search и clone завершённого разговора; проектные
-   scope сохраняют выбранный default conversation. Старые глобальные сессии
-   остаются доступными для явного выбора/продолжения, без перезаписи или
-   автоматического объединения с новой. Команда ручного new действует в обоих
-   scope: сохраняет старую сессию, создаёт новый ID с пустой историей и выбирает
-   его. При failed save прежняя сессия остаётся выбранной; история и очередь
-   не сбрасываются. Миграция `global.eld` сохраняет его разговор как доступную
-   старую сессию, не назначая активным при новом запуске.
-3. Явно мигрировать schema 1 с backup и сохранением project mapping, history,
-   reasoning/tool pairs и interruption audit. Не переписывать файлы молча.
-4. Clone получает новую identity и provenance; не копирует runtime handles,
-   очередь или полномочия и не повторяет прежние actions.
-5. Запретить неоднозначные mutations активного диалога. Не добавлять silent
-   cross-project reassignment; семантика переноса требует отдельного решения.
+1. ID→object registry отделён от scope→selected-ID. Новая schema 3:
+   conversations/<hash-ID>.eld и project pointers в selections/<hash-root>.eld.
+   Canonical scope неизменяем; cross-project reassignment нет.
+2. `emacs-agent-session-new`, `-rename`, `-select`, `-search`, `-clone`. Выбор только
+   внутри scope; names не identity/filename. Список/search локальные, без backend.
+   RET показывает журнал, не выбирает. Nonselected journal явно адресует owner;
+   рабочий буфер — выбранный conversation, зафиксированный до minibuffer.
+3. Первый implicit global use после restart создаёт свежий разговор; catalog,
+   reload и показ existing journal не восстанавливают старый global выбор.
+   F6 old globals доступны через explicit select. Проектный выбор persisted.
+4. New/select/clone только idle involved conversations; rename — idle target.
+   До публикации сохраняются old/source/candidate и project pointer. Ошибка
+   не меняет выбор/history/queue; сохранённый unselected candidate может остаться.
+   Initial project identity/pointer durable даже при autosave off; subsequent
+   chat checkpoints по-прежнему подчиняются autosave policy.
+5. Clone deep-copies history/events/compaction, rewrites event session IDs и
+   получает source-ID/time provenance. Не копирует input recovery/queues,
+   usage anchor, editor/backend/transport handles и не исполняет старые actions.
+   F3 artifacts остаются ссылками, не копируются/не перечитываются.
+6. Mutation lock отвергает новые admissions и ручной recovery до изменения
+   ledger, но не блокирует уже accepted F2 conversions в других разговорах.
+   Run/input/summary liveness проверяет ID+object identity, не selection.
 
-**Готово:** migration/restore ERT, два независимых разговора одного проекта,
-переключение source/journal, same-basename roots, global conversations, clone
-с tool history и сохранённой provenance. Отдельные restart-тесты подтверждают
-новую пустую глобальную сессию с новым ID, сохранность старой истории и её
-явное продолжение; повторная загрузка пакета/показ журнала не создают дубликат.
-После выбора старой глобальной сессии следующий restart всё равно создаёт
-новую; проектный выбор восстанавливается как раньше. Ручное new в global и
-project создаёт пустой разговор с новым ID, сохраняет старый без изменений и
-позволяет вернуться к нему; failed save не переключает выбранную сессию и не
-теряет историю/очередь. Никаких stale callback actions.
+**Проверка:** 252 ERT и warnings-as-errors compile/diff-check. В том числе реальные
+pinned gptel wire/tool/reasoning replay на clone, parallel nonselected journal
+ownership, minibuffer selection changes, failure stages, orphan candidates,
+withdrawn recovery isolation и backend-free fresh-process restart tests.
+Два subprocess подтверждают новые global IDs, explicit old-global continuation,
+project selection и отсутствие reload duplicates. Независимый read-only review
+не нашёл подтверждённых F6 проблем. Пользовательский live F6 smoke ещё отдельно;
+новые structs в рабочий Emacs не hot-loaded, нужен restart.
 
 ### F7 — Tool execution ledger и разбор прерываний
 
@@ -774,7 +785,7 @@ late callbacks и независимость старой ветви; UI явн�
 | F3 | Хранение и cleanup artifacts | Приватное durable хранилище с references; явная cleanup policy, не бессрочный temp-file мусор |
 | F4 | Auto compaction default/окно модели | Начать с manual + opt-in auto; окно задаётся явно/из проверенных metadata |
 | F5 | YAML/parser dependency и precedence | Совместимость Agent Skills, bounded data parsing, ошибки duplicates одного уровня |
-| F6/F8 | Schema/migration и активные mutations | Backup и явная миграция; mutations выбора/истории только idle |
+| F6/F8 | Schema/migration и активные mutations | F6: schema 3 без миграций, legacy archives не импортируются; mutations только idle. F8 согласуется отдельно |
 | F7 | Неуспешный durable intent checkpoint | В строгом режиме не dispatch; выбор строгого режима/default согласовать отдельно |
 
 Remote resources не должны неявно запускать длительное TRAMP discovery только
@@ -806,10 +817,12 @@ loading. Любые новые пользовательские настройк
 7. После каждого этапа обновить README/интеграционные ограничения, зафиксировать
    проверенные факты и оставшиеся вопросы. Коммит — только по запросу пользователя.
 
-**Рекомендуемый следующий шаг:** restart Emacs и пользовательская проверка F4
-через `M-x emacs-agent-compact`, затем согласование scope F5. F2 пользователь
+**Рекомендуемый следующий шаг:** restart и пользовательская проверка F6
+(new/select/clone и project/global restart). F5 отложен; следующий scope
+согласовать после проверки. Pre-F6 файлы оставлены архивом без импорта. F2 пользователь
 проверил и одобрил commit; отдельной инструментированной full real-provider
-matrix нет. При реализации F4 real-model запросов и hot-load structs не было.
+matrix нет. Исходный F4 не hot-loaded в pre-F4 Emacs; поздняя смена framing
+не меняет layouts structs.
 Templates по решению пользователя отложены. Отдельный benchmark экономии
 токенов F0c остаётся опциональным и требует одинакового исходника, фактической
 модели/настроек и сопоставимого cache state.

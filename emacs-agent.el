@@ -110,14 +110,20 @@ Starts a gptel run immediately if this session is idle; otherwise queues it."
   (let* ((origin (emacs-agent-session-origin))
          (source (plist-get origin :buffer))
          (root (plist-get origin :root))
+         (session (or (plist-get origin :session)
+                      (emacs-agent-session-selected root)
+                      (and root (emacs-agent-store-load-session root))))
          (context (with-current-buffer source (emacs-agent-context-capture root)))
          (text (save-current-buffer
                  (read-from-minibuffer "Agent: " nil emacs-agent-minibuffer-map
                                        nil 'emacs-agent-prompt-history))))
     (unless (string-empty-p (string-trim text))
-      (let* ((session (or (plist-get origin :session) (emacs-agent-session-get root)))
-             (run (emacs-agent-session-enqueue session text context source
-                                               (plist-get origin :window))))
+      (unless session
+        (when (emacs-agent-session-selected root)
+          (user-error "Conversation selection changed during input; submit again"))
+        (setq session (emacs-agent-session-get root)))
+      (let ((run (emacs-agent-session-enqueue session text context source
+                                             (plist-get origin :window))))
         (emacs-agent--log-buffer session)
         (emacs-agent-gptel-submit run)
         (message "Agent turn %s in %s" (emacs-agent-run-status run)
@@ -193,8 +199,7 @@ A journal always selects its owning session, even if its source buffer died."
 (defun emacs-agent--current-session ()
   "Resolve an existing current session without creating one for cancellation."
   (or emacs-agent-session--owner
-      (gethash (or (emacs-agent-session-resolve-root) 'global)
-               emacs-agent-session--registry)
+      (emacs-agent-session-selected (emacs-agent-session-resolve-root))
       (user-error "No agent session here")))
 
 ;;;###autoload
@@ -219,11 +224,12 @@ Zero retains no raw suffix.  Original history is never deleted."
    (when current-prefix-arg
      (list (read-number "Keep recent tokens (0 summarizes all): " emacs-agent-compaction-keep-recent)
            (read-string "Summary focus (optional): "))))
+  (emacs-agent-session--unlocked)
   (require 'emacs-agent-gptel)
   (let* ((origin (emacs-agent-session-origin))
          (source (plist-get origin :buffer))
          (session (or (plist-get origin :session)
-                      (gethash (or (plist-get origin :root) 'global) emacs-agent-session--registry)
+                      (emacs-agent-session-selected (plist-get origin :root))
                       (emacs-agent-store-load-session (plist-get origin :root))
                       (user-error "No agent session here")))
          (run (with-current-buffer source
@@ -247,6 +253,128 @@ Does not stop or resume any run.  Snapshots may contain secrets."
     (message "Saved agent session to %s" file)
     file))
 
+(defun emacs-agent--conversation-origin ()
+  "Capture the explicit owner/scope and current choice before user input."
+  (emacs-agent-session--unlocked)
+  (let* ((owner emacs-agent-session--owner)
+         (root (if owner (emacs-agent-session-project-root owner)
+                 (emacs-agent-session-resolve-root)))
+         (selected (or (emacs-agent-session-selected root)
+                       (and root (emacs-agent-store-load-session root)))))
+    (list :root root :session (or owner selected) :selected selected
+          :source (unless owner (current-buffer)))))
+
+(defun emacs-agent--conversation-check (origin)
+  "Reject a changed selection while reading input for captured ORIGIN."
+  (unless (eq (plist-get origin :selected)
+              (emacs-agent-session-selected (plist-get origin :root)))
+    (user-error "Conversation selection changed; try again"))
+  (when-let* ((session (plist-get origin :session)))
+    (unless (emacs-agent-session-registered-p session)
+      (user-error "Conversation was retired; try again"))))
+
+(defun emacs-agent--conversation-show (session source)
+  "Focus SESSION after a user selection, explicitly binding working SOURCE.
+This helper is for user commands, never asynchronous callbacks."
+  (when (buffer-live-p source)
+    (setf (emacs-agent-session-last-source-buffer session) source))
+  (emacs-agent--render-log session)
+  (pop-to-buffer (emacs-agent--log-buffer session))
+  session)
+
+;;;###autoload
+(defun emacs-agent-session-new (&optional name)
+  "Save the old conversation and select a new empty one in this scope.
+With a prefix argument, ask for optional NAME.  Requires idle conversations."
+  (interactive)
+  (let ((origin (emacs-agent--conversation-origin)))
+    (when (and (called-interactively-p 'interactive) current-prefix-arg)
+      (setq name (read-string "New conversation name (optional): ")))
+    (emacs-agent--conversation-check origin)
+    (emacs-agent--conversation-show
+     (emacs-agent-session--new (plist-get origin :root) name (plist-get origin :session))
+     (plist-get origin :source))))
+
+;;;###autoload
+(defun emacs-agent-session-rename (&optional name)
+  "Save a new NAME for the explicit current idle conversation."
+  (interactive)
+  (let ((session (or (plist-get (emacs-agent--conversation-origin) :session)
+                     (user-error "No conversation here"))))
+    (setq name (or name (read-string "Conversation name (empty clears): "
+                                    (emacs-agent-session-name session))))
+    (emacs-agent-session--rename session name)
+    (when (buffer-live-p (emacs-agent-session-log-buffer session))
+      (with-current-buffer (emacs-agent-session-log-buffer session)
+        (rename-buffer (format "*emacs-agent: %s*" (emacs-agent--session-name session)) t)
+        (force-mode-line-update)))
+    session))
+
+;;;###autoload
+(defun emacs-agent-session-select (&optional conversation)
+  "Select an idle CONVERSATION in this scope, saving the old choice first.
+CONVERSATION can be a registered object or its ID; interactively use completion.
+Opening a journal alone does not select it."
+  (interactive)
+  (let* ((origin (emacs-agent--conversation-origin))
+         (key (or (plist-get origin :root) 'global)) choices)
+    (emacs-agent-store-load-all)
+    (maphash
+     (lambda (_ session)
+       (when (equal key (emacs-agent-session-key session))
+         (push (cons (format "%s [%s]" (emacs-agent--session-name session)
+                             (emacs-agent-session-id session)) session) choices)))
+     emacs-agent-session--registry)
+    (unless choices (user-error "No saved conversations in this scope; use emacs-agent-session-new"))
+    (let ((target (cond ((emacs-agent-session-p conversation) conversation)
+                        ((stringp conversation) (gethash conversation emacs-agent-session--registry))
+                        ((null conversation)
+                         (cdr (assoc (completing-read "Conversation: " choices nil t) choices))))))
+      (unless (and target (equal key (emacs-agent-session-key target)))
+        (user-error "Conversation must belong to this scope"))
+      (emacs-agent--conversation-check origin)
+      (emacs-agent--conversation-show
+       (emacs-agent-session--select target (plist-get origin :session)) (plist-get origin :source)))))
+
+;;;###autoload
+(defun emacs-agent-session-clone (&optional name)
+  "Clone the explicit idle conversation into a selected independent archive.
+With a prefix argument, ask for NAME.  Copy no runtime queue or authority."
+  (interactive)
+  (let* ((origin (emacs-agent--conversation-origin))
+         (source (or (plist-get origin :session) (user-error "No conversation here"))))
+    (when (and (called-interactively-p 'interactive) current-prefix-arg)
+      (setq name (read-string "Clone name (optional): ")))
+    (emacs-agent--conversation-check origin)
+    (emacs-agent--conversation-show (emacs-agent-session--clone source name) (plist-get origin :source))))
+
+(defun emacs-agent--conversation-matches-p (session regexp)
+  "Search SESSION's local name, summary and archive text using REGEXP.
+Do not follow artifact paths or execute saved expressions."
+  (let ((case-fold-search t))
+    (cl-labels ((matches (value)
+                  (cond ((stringp value) (string-match-p regexp value))
+                        ((consp value) (cl-some #'matches value))
+                        ((vectorp value) (cl-some #'matches (append value nil))))))
+      (or (matches (emacs-agent-session-id session))
+          (matches (emacs-agent-session-name session))
+          (matches (emacs-agent-session-project-root session))
+          (matches (emacs-agent-session-provenance session))
+          (matches (emacs-agent-session-compaction session))
+          (matches (emacs-agent-session-messages session))
+          (matches (emacs-agent-session-events session))))))
+
+;;;###autoload
+(defun emacs-agent-session-search (regexp)
+  "Search local conversation names and full archive text with REGEXP.
+Search all scopes without changing their selections or using a model."
+  (interactive (list (read-string "Search conversations (regexp): ")))
+  (condition-case nil (string-match-p regexp "")
+    (invalid-regexp (user-error "Invalid search regexp")))
+  (emacs-agent-session-list regexp))
+
+(defvar-local emacs-agent-session-list--query nil)
+
 (defvar emacs-agent-session-list-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map tabulated-list-mode-map)
@@ -255,7 +383,7 @@ Does not stop or resume any run.  Snapshots may contain secrets."
 
 (define-derived-mode emacs-agent-session-list-mode tabulated-list-mode "Agent-Sessions"
   "Read-only session list.  RET opens a journal; g refreshes saved sessions."
-  (setq tabulated-list-format [("Session" 32 t) ("Status" 16 t) ("Updated" 20 t) ("Root" 0 t)]
+  (setq tabulated-list-format [("Conversation" 48 t) ("Current" 7 t) ("Status" 16 t) ("Updated" 20 t) ("Root" 0 t)]
         tabulated-list-padding 2
         tabulated-list-sort-key '("Updated" . t))
   (add-hook 'tabulated-list-revert-hook #'emacs-agent-session-list--entries nil t)
@@ -266,12 +394,18 @@ Does not stop or resume any run.  Snapshots may contain secrets."
   (emacs-agent-store-load-all)
   (setq tabulated-list-entries nil)
   (maphash
-   (lambda (key session)
-     (when (emacs-agent-store--identity-p key (emacs-agent-session-project-root session))
+   (lambda (id session)
+     (when (and (emacs-agent-store--identity-p (emacs-agent-session-key session)
+                                             (emacs-agent-session-project-root session))
+                (or (null emacs-agent-session-list--query)
+                    (emacs-agent--conversation-matches-p session emacs-agent-session-list--query)))
        (let* ((run (emacs-agent-session-active-run session))
               (last (car (last (emacs-agent-session-events session))))
               (status (if run (emacs-agent-run-status run) (or (plist-get last :type) 'idle))))
-         (push (list key (vector (emacs-agent--session-name session) (format "%s" status)
+         (push (list id (vector (emacs-agent--session-name session)
+                                (if (eq session (emacs-agent-session-selected
+                                                 (emacs-agent-session-project-root session))) "*" "")
+                                (format "%s" status)
                                  (format-time-string "%Y-%m-%d %H:%M:%S"
                                                      (seconds-to-time (emacs-agent-session-updated-at session)))
                                  (or (emacs-agent-session-project-root session) "global")))
@@ -287,12 +421,14 @@ Does not stop or resume any run.  Snapshots may contain secrets."
     (display-buffer (emacs-agent--log-buffer session))))
 
 ;;;###autoload
-(defun emacs-agent-session-list ()
-  "List in-memory and saved sessions; isolate corrupt snapshots as warnings."
+(defun emacs-agent-session-list (&optional query)
+  "List conversations, optionally filtering archive text with regexp QUERY.
+No selection, model request, artifact read or legacy snapshot import occurs."
   (interactive)
   (let ((buffer (get-buffer-create "*emacs-agent sessions*")))
     (with-current-buffer buffer
       (emacs-agent-session-list-mode)
+      (setq emacs-agent-session-list--query query)
       (emacs-agent-session-list--entries)
       (tabulated-list-print t))
     (display-buffer buffer)))
@@ -364,6 +500,7 @@ Does not stop or resume any run.  Snapshots may contain secrets."
 
 (defun emacs-agent-pending--rebind (input)
   "Explicitly rebind missing source/backend for INPUT; never recapture snapshots."
+  (emacs-agent-session--unlocked)
   (require 'emacs-agent-gptel)
   (let* ((run (emacs-agent-input-run input))
          (source (emacs-agent-run-source-buffer run))

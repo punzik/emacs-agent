@@ -16,7 +16,7 @@ Streaming deltas are checkpointed at most once per five seconds; terminal
 states and tool boundaries are always saved immediately."
   :type 'boolean :group 'emacs-agent)
 
-(defconst emacs-agent-store--schema 2)
+(defconst emacs-agent-store--schema 3)
 (defconst emacs-agent-store--adapter "chat-completions-v1")
 (defvar emacs-agent-store--last-save (make-hash-table :test #'eq))
 
@@ -27,10 +27,15 @@ states and tool boundaries are always saved immediately."
            (equal root (file-name-as-directory root)) (equal key root))
     (eq key 'global)))
 
-(defun emacs-agent-store--file (key)
-  "Return the snapshot path for KEY, without touching the filesystem."
-  (expand-file-name (if (eq key 'global) "global.eld"
-                      (concat "project-" (secure-hash 'sha256 key) ".eld"))
+(defun emacs-agent-store--file (id)
+  "Return the new-namespace snapshot path for conversation ID, without IO."
+  (expand-file-name (concat "conversations/" (secure-hash 'sha256 id) ".eld")
+                    emacs-agent-data-directory))
+
+(defun emacs-agent-store--selection-file (root)
+  "Return the project selection pointer path for ROOT."
+  (unless root (error "Global selection has no durable pointer"))
+  (expand-file-name (concat "selections/" (secure-hash 'sha256 root) ".eld")
                     emacs-agent-data-directory))
 
 (defun emacs-agent-store--data (value &optional ancestors depth)
@@ -148,6 +153,9 @@ Concatenate each block once, avoiding quadratic string accumulation."
                  (list :schema emacs-agent-store--schema :adapter emacs-agent-store--adapter
                        :id (emacs-agent-session-id session) :key (emacs-agent-session-key session)
                        :project-root (emacs-agent-session-project-root session)
+                       :name (emacs-agent-session-name session)
+                       :created-at (emacs-agent-session-created-at session)
+                       :provenance (emacs-agent-session-provenance session)
                        :updated-at (emacs-agent-session-updated-at session)
                        :source (emacs-agent-store--source (emacs-agent-session-last-source-buffer session))
                        :messages messages :events (emacs-agent-session-events session)
@@ -158,7 +166,7 @@ Concatenate each block once, avoiding quadratic string accumulation."
                                        (emacs-agent-session-inputs session))))))
       ;; Validate every original identity/field before aggregation can hide it.
       (emacs-agent-store--validate data
-                                   (emacs-agent-store--file (emacs-agent-session-key session)) t)
+                                   (emacs-agent-store--file (emacs-agent-session-id session)) t)
       (plist-put data :events (emacs-agent-store--compact-events (plist-get data :events)))
       data)))
 
@@ -182,29 +190,51 @@ caller's print settings.  Pretty layout in every network callback is costly."
              (prin1 value (current-buffer))))
   (insert "\n)\n"))
 
-(defun emacs-agent-store-save (session)
-  "Atomically save SESSION, returning its path; leave old data intact on error."
-  (let* ((data (emacs-agent-store--snapshot session))
-         (file (emacs-agent-store--file (emacs-agent-session-key session)))
-         temporary)
-    (emacs-agent-store--validate data file)
-    (unless (file-directory-p emacs-agent-data-directory)
-      (make-directory emacs-agent-data-directory t)
-      (set-file-modes emacs-agent-data-directory #o700))
+(defun emacs-agent-store--private-directory (directory)
+  "Create DIRECTORY and missing parents privately."
+  (unless (file-directory-p directory)
+    (let ((parent (file-name-directory (directory-file-name directory))))
+      (when (and parent (not (equal parent directory)))
+        (emacs-agent-store--private-directory parent)))
+    (make-directory directory)
+    (set-file-modes directory #o700)))
+
+(defun emacs-agent-store--write (data file)
+  "Atomically write DATA to FILE privately; preserve existing FILE on error."
+  (let ((directory (file-name-directory file)) temporary)
+    (emacs-agent-store--private-directory directory)
     (unwind-protect
         (progn
-          (setq temporary (make-temp-file (expand-file-name ".snapshot-" emacs-agent-data-directory)))
+          (setq temporary (make-temp-file (expand-file-name ".snapshot-" directory)))
           (set-file-modes temporary #o600)
           (with-temp-buffer
             (let ((print-length nil) (print-level nil) (print-circle nil)
                   (print-escape-newlines t) (coding-system-for-write 'utf-8-unix))
-              (insert ";; Emacs Agent session data; contains potentially sensitive history.\n")
+              (insert ";; Emacs Agent data; contains potentially sensitive history.\n")
               (emacs-agent-store--print data)
               (write-region (point-min) (point-max) temporary nil 'silent)))
           (rename-file temporary file t)
-          (puthash session (float-time) emacs-agent-store--last-save)
           file)
       (when (and temporary (file-exists-p temporary)) (delete-file temporary)))))
+
+(defun emacs-agent-store-save (session)
+  "Save SESSION's snapshot only; never change a selection pointer."
+  (let* ((data (emacs-agent-store--snapshot session))
+         (file (emacs-agent-store--file (emacs-agent-session-id session))))
+    (emacs-agent-store--validate data file)
+    (emacs-agent-store--write data file)
+    (puthash session (float-time) emacs-agent-store--last-save)
+    file))
+
+(defun emacs-agent-store-select (session)
+  "Persist SESSION's project selection pointer only; global is a no-op."
+  (when-let* ((root (emacs-agent-session-project-root session)))
+    (unless (emacs-agent-store--identity-p (emacs-agent-session-key session) root)
+      (error "Invalid selection scope"))
+    (emacs-agent-store--write
+     (list :schema emacs-agent-store--schema :project-root root
+           :id (emacs-agent-session-id session))
+     (emacs-agent-store--selection-file root))))
 
 (defun emacs-agent-store--plist (value)
   "Require VALUE to be a keyword plist with no duplicate fields."
@@ -246,17 +276,29 @@ LIVE-EVENTS allows raw deltas and not-yet-recomputed block states in a copied
 live list.  Durable snapshots require complete, consistent block metadata."
   (emacs-agent-store--plist data)
   (cl-loop for key in data by #'cddr do
-           (unless (memq key '(:schema :adapter :id :key :project-root :updated-at :source :messages :events :runs :inputs :compaction :usage-anchor))
+           (unless (memq key '(:schema :adapter :id :key :project-root :name :created-at :provenance :updated-at :source :messages :events :runs :inputs :compaction :usage-anchor))
              (error "Unknown snapshot field")))
   (unless (eql (plist-get data :schema) emacs-agent-store--schema)
     (error "Unsupported session schema; no migration is provided, use a new data directory"))
   (unless (equal (plist-get data :adapter) emacs-agent-store--adapter)
     (error "Unsupported replay adapter"))
   (unless (and (stringp (plist-get data :id))
+               (not (string-empty-p (plist-get data :id)))
+               (numberp (plist-get data :created-at))
                (numberp (plist-get data :updated-at))
                (emacs-agent-store--identity-p (plist-get data :key) (plist-get data :project-root))
-               (equal (expand-file-name file) (emacs-agent-store--file (plist-get data :key))))
+               (equal (expand-file-name file) (emacs-agent-store--file (plist-get data :id))))
     (error "Invalid session identity or filename"))
+  (let ((name (plist-get data :name)) (provenance (plist-get data :provenance)))
+    (unless (or (null name) (and (stringp name) (not (string-match-p "[[:cntrl:]]" name))))
+      (error "Invalid conversation name"))
+    (when provenance
+      (emacs-agent-input--fields provenance '(:source-id :time))
+      (unless (and (stringp (plist-get provenance :source-id))
+                   (not (string-empty-p (plist-get provenance :source-id)))
+                   (not (equal (plist-get provenance :source-id) (plist-get data :id)))
+                   (numberp (plist-get provenance :time)))
+        (error "Invalid conversation provenance"))))
   (dolist (field '(:messages :events :runs :inputs))
     (unless (proper-list-p (plist-get data field)) (error "Malformed session collection")))
   (emacs-agent-store--context data)
@@ -325,20 +367,37 @@ live list.  Durable snapshots require complete, consistent block metadata."
     (setq emacs-agent-session--counter
           (max emacs-agent-session--counter (string-to-number (match-string 1 id))))))
 
-(defun emacs-agent-store--restore (file)
-  "Read and validate FILE as data; register an idle session, never resume tasks."
-  (let ((data (with-temp-buffer
-                (insert-file-contents file)
-                (goto-char (point-min))
-                (let ((value (read (current-buffer))))
-                  (forward-comment (point-max))
-                  (unless (eobp) (error "Trailing data in session file"))
-                  (emacs-agent-store--data value)))))
+(defun emacs-agent-store--read (file)
+  "Read FILE as inert data, rejecting trailing forms."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (goto-char (point-min))
+    (let ((value (read (current-buffer))))
+      (forward-comment (point-max))
+      (unless (eobp) (error "Trailing data in session file"))
+      (emacs-agent-store--data value))))
+
+(defun emacs-agent-store--restore (file &optional root id)
+  "Validate FILE, then register an idle session without selecting it.
+When ID is supplied, require that ID and ROOT match the pointer first."
+  (let ((data (emacs-agent-store--read file)))
     (emacs-agent-store--validate data file)
-    (or (gethash (plist-get data :key) emacs-agent-session--registry)
+    (when (and id (not (and (equal id (plist-get data :id))
+                           (equal root (plist-get data :project-root)))))
+      (error "Selection pointer does not match conversation"))
+    (or (let ((existing (gethash (plist-get data :id) emacs-agent-session--registry)))
+          (when existing
+            (unless (and (equal (emacs-agent-session-key existing) (plist-get data :key))
+                         (equal (emacs-agent-session-project-root existing)
+                                (plist-get data :project-root)))
+              (error "Registered conversation scope mismatch"))
+            existing))
         (let* ((session (make-emacs-agent-session
                          :id (plist-get data :id) :key (plist-get data :key)
                          :project-root (plist-get data :project-root)
+                         :name (plist-get data :name)
+                         :created-at (plist-get data :created-at)
+                         :provenance (plist-get data :provenance)
                          :updated-at (plist-get data :updated-at)
                          :messages (plist-get data :messages) :events (plist-get data :events)
                          :compaction (plist-get data :compaction)
@@ -389,25 +448,38 @@ live list.  Durable snapshots require complete, consistent block metadata."
                           (if (eq (plist-get saved :status) 'queued)
                               (concat "\nPending user text: " (plist-get saved :user-text)) "")))
                  :saved-run saved))))
-          (puthash (emacs-agent-session-key session) session emacs-agent-session--registry)
+          (puthash (emacs-agent-session-id session) session emacs-agent-session--registry)
           session))))
 
 (defun emacs-agent-store-load-session (root)
-  "Lazily restore ROOT's saved session, or return nil if none exists.
-Corrupt/unsupported files fail explicitly and are never replaced by a fresh
-session as a side effect of asking.  Other sessions remain loadable."
-  (let ((file (emacs-agent-store--file (or root 'global))))
-    (when (file-exists-p file)
-      (condition-case err (emacs-agent-store--restore file)
-        (error (user-error "Cannot restore %s: %s" file (error-message-string err)))))))
+  "Restore ROOT's project pointer and select it; nil ROOT never restores.
+Missing or corrupt pointer targets fail explicitly, never create a replacement."
+  (when root
+    (let ((pointer (emacs-agent-store--selection-file root)))
+      (when (file-exists-p pointer)
+        (condition-case err
+            (let ((data (emacs-agent-store--read pointer)))
+              (emacs-agent-input--fields data '(:schema :project-root :id))
+              (unless (and (eql (plist-get data :schema) emacs-agent-store--schema)
+                           (equal root (plist-get data :project-root))
+                           (stringp (plist-get data :id))
+                           (not (string-empty-p (plist-get data :id))))
+                (error "Invalid project selection pointer"))
+              (let ((session (emacs-agent-store--restore
+                              (emacs-agent-store--file (plist-get data :id))
+                              root (plist-get data :id))))
+                (puthash root (emacs-agent-session-id session) emacs-agent-session--selected)
+                session))
+          (error (user-error "Cannot restore %s: %s" pointer (error-message-string err))))))))
 
 (defun emacs-agent-store-load-all ()
-  "Load independent snapshots; report bad files without losing good sessions."
-  (when (file-directory-p emacs-agent-data-directory)
-    (dolist (file (directory-files emacs-agent-data-directory t "\\.eld\\'"))
-      (condition-case err (emacs-agent-store--restore file)
-        (error (display-warning 'emacs-agent
-                                (format "Cannot restore %s: %s" file (error-message-string err))))))))
+  "Register only new-namespace snapshots, never select or load legacy archives."
+  (let ((directory (expand-file-name "conversations/" emacs-agent-data-directory)))
+    (when (file-directory-p directory)
+      (dolist (file (directory-files directory t "\\.eld\\'"))
+        (condition-case err (emacs-agent-store--restore file)
+          (error (display-warning 'emacs-agent
+                                  (format "Cannot restore %s: %s" file (error-message-string err)))))))))
 
 (defun emacs-agent-store--auto-save (session event)
   "Checkpoint SESSION for EVENT without turning filesystem errors into tool errors."
