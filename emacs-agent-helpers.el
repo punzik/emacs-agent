@@ -78,7 +78,8 @@ Caller has established the accessible restriction."
       (save-restriction
         (widen)
         (unless (<= end (plist-get info :total-lines))
-          (error "Line range exceeds EOF"))
+          (error "Requested lines %d–%d; buffer has %d lines (EOF)"
+                 start end (plist-get info :total-lines)))
         (goto-char (point-min))
         (forward-line (1- start))
         (setq begin (point))

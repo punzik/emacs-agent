@@ -393,6 +393,35 @@ in memory before saving; this is not a memory or execution limit.
 See [ADR-0009](docs/adr/0009-simple-full-tool-output.md).
 See [ADR-0001](docs/adr/0001-f0-buffer-helpers.md) for the contract.
 
+### Evaluation diagnostics
+
+Errors/quits keep their final `ERROR CONDITION: message` / `QUIT:` line and add
+read/eval phase, top-level form number and completed-form count. Locations use
+1-based **character** positions/lines and 0-based character columns (not bytes or
+display columns). Reader failures include a bounded escaped excerpt and, when
+available, a syntax-table hint for an open string/list. This is not a full parser
+explanation for every reader construct.
+
+Execution errors can include up to eight function names and a loaded function's
+signature, with generic argument names where necessary. Arguments/closure
+contexts are not dumped; unavailable or stale captures are not guessed. Capture
+uses a locally bound noninteractive debugger, never the user's debugger window.
+It is best effort; evaluated code can suppress/change debugger behavior.
+
+When the actual source buffer's net state changes, a compact footer shows its
+identity and changed fields as `(before after)` pairs. `:whole-characters` ignores
+narrowing. Rename/kill and modified-flag changes are visible too; **other buffers
+and external effects are not checked**. Read-only calls keep their old output.
+The footer follows successful `=> VALUE`; all text still passes through F3, so
+very small output budgets can cut diagnostics or the value (full text is retained
+when artifact saving succeeds).
+
+Forms still execute sequentially. A reader error does not undo earlier forms;
+an evaluation error may occur after mutations within that same form. There is
+**no rollback, automatic save or repeat**. Diagnostics preserve source point,
+restriction and undo; they do not repair the editor or certify saved-file equality.
+See [ADR-0016](docs/adr/0016-evaluation-error-diagnostics.md).
+
 ### Editing live buffers with undo
 
 Prefer one exact-text batch through `eval_elisp`:
@@ -454,6 +483,27 @@ The model receives these guidelines in its system prompt; unrestricted eval
 can still bypass them. Undo is subject to normal Emacs size limits and buffer
 lifetime, not persisted across restarts. See
 [ADR-0002](docs/adr/0002-buffer-native-editing.md).
+
+### Checking edited code
+
+Use **edit → explicitly save when intended → check → reread changed ranges after
+the last check**. Distinguish edited, saved and checked in reports. Disk commands
+cannot validate unsaved buffer text; do not implicitly save/discard user changes
+just to run them. Active editor diagnostics may check unsaved text, but confirm
+which backend actually serves this buffer and whether its results are fresh.
+Loaded features or available commands alone do not prove working code checks;
+read minor-mode variables rather than activating modes to inspect their state.
+
+The system prompt includes a tested `process-file` recipe: refuse modified or
+unvisited buffers, capture fresh combined stdout/stderr in a disposable buffer,
+and return `:exit`, `:output`, `:directory`, `:checked-file`. Adapt program, argv
+and working directory to the project. Require **integer exit 0**, not empty output,
+before claiming success or running a built binary. This is an example inside
+`eval_elisp`, not another tool or an automatic execution/save gate. `process-file`
+is synchronous; use an appropriate existing async workflow for long checks.
+
+EOF read errors now include the requested range and actual whole-buffer line
+count instead of silently clamping END. See [ADR-0017](docs/adr/0017-edit-save-check-workflow.md).
 
 ### Replay support boundary
 
@@ -662,7 +712,7 @@ normal minibuffer hooks/keymaps; the agent does not supply a custom editor.
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 310 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 341 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh

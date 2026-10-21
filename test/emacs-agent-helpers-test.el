@@ -28,6 +28,20 @@
           (should (= (plist-get around :total-lines) (length texts)))
           (should (= (plist-get (plist-get around :at) :line) (length texts))))))))
 
+(ert-deftest emacs-agent-helpers-eof-error-reports-request-and-whole-buffer-size ()
+  (dolist (text '("" "a\n" "λ\nsecond"))
+    (with-temp-buffer
+      (insert text)
+      (goto-char (point-min))
+      (when (> (buffer-size) 2) (narrow-to-region 1 2))
+      (let* ((total (plist-get (emacs-agent-buffer-info (current-buffer)) :total-lines))
+             (end (+ total 3))
+             (state (list (point) (point-min) (point-max) (buffer-chars-modified-tick)))
+             (err (should-error (emacs-agent-read-lines (current-buffer) 1 end))))
+        (should (equal (error-message-string err)
+                       (format "Requested lines 1–%d; buffer has %d lines (EOF)" end total)))
+        (should (equal state (list (point) (point-min) (point-max) (buffer-chars-modified-tick))))))))
+
 (ert-deftest emacs-agent-helpers-line-14-regression ()
   "Both broken approaches misread lines; helpers ignore the user's point."
   (with-temp-buffer
@@ -273,17 +287,17 @@
 (ert-deftest emacs-agent-helpers-loaded-with-one-tool ()
   (should (featurep 'emacs-agent-helpers))
   (should (string-match-p "emacs-agent-read-around" emacs-agent-system-prompt))
-  (should (string-match-p "call emacs-agent-buffer-info instead of reading text again"
+  (should (string-match-p "For metadata use emacs-agent-buffer-info"
                           emacs-agent-system-prompt))
-  (should (string-match-p "A newly obtained tick does not validate previously read text"
+  (should (string-match-p "Fresh ticks cannot validate old text"
                           emacs-agent-system-prompt))
   (should (string-match-p
            (regexp-quote "(plist-get (emacs-agent-buffer-info \"example.el\") :tick)")
            emacs-agent-system-prompt))
-  (should (string-match-p "It has no :fields argument" emacs-agent-system-prompt))
-  (dolist (rule '("resume SAME START/END" "same :tick until :truncated nil"
-                  "Never claim full verification from partial reads"
-                  "explicitly scoped checks of changed ranges suffice"))
+  (should (string-match-p "(no :fields)" emacs-agent-system-prompt))
+  (dolist (rule '("While :truncated, resume SAME START/END" "same :tick"
+                  "Partial reads cannot prove full verification"
+                  "scoped changed-range checks suffice"))
     (should (string-match-p (regexp-quote rule) emacs-agent-system-prompt))))
 
 ;;; emacs-agent-helpers-test.el ends here

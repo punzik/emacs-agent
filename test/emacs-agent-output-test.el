@@ -54,8 +54,12 @@
       (let* ((result (emacs-agent-eval (concat "(princ (make-string 2000 ?x)) " (car case))))
              (file (emacs-agent-output-test--file result)))
         (should (string-match-p (regexp-quote (cdr case)) result))
-        (should (equal (emacs-agent-output-test--read file)
-                       (concat (make-string 2000 ?x) (cdr case))))))))
+        (let ((full (emacs-agent-output-test--read file)))
+          (should (string-prefix-p (make-string 2000 ?x) full))
+          (should (string-suffix-p (cdr case) full))
+          (if (equal (car case) "nil")
+              (should (equal full (concat (make-string 2000 ?x) (cdr case))))
+            (should (string-match-p "Phase: eval; form: 2; forms completed: 1" full))))))))
 
 (ert-deftest emacs-agent-output-huge-value-unicode-and-quoted-path ()
   (emacs-agent-output-test--private

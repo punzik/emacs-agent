@@ -631,6 +631,50 @@ hot-load. Independent review found a separator-line reader-anchor bug on `D`;
 event-owned separators and a regression test fix the jump. No other verified
 findings were reported. See [ADR-0015](adr/0015-conversation-ui-and-activity-status.md).
 
+## Evaluation error and source-state diagnostics
+
+`emacs-agent-eval.el` keeps sequential unrestricted read/eval and the existing
+single-tool/plain-string contract. Failure feedback adds phase, form/completed
+counts, character positions, bounded source excerpts and best-effort open-string/
+list hints. ERROR/QUIT remains the last line, preserving short failures in F3's
+tail. Evaluation errors may carry at most eight function names and a loaded
+signature: no argument/environment dumps, autoload or dynamic documentation lookup.
+A local noninteractive debugger captures before unwinding; ordinary caught errors,
+throws, cleanup and quits retain their behavior. The internal repeated-debugger
+counter is locally bound/reset, never globally changed. Unavailable/stale stacks
+are reported as such. This is best effort, not a sandbox.
+
+Only the actual source buffer is inspected before/after, without reading text or
+moving point/restriction/undo. Net changes produce a compact identity/delta footer
+with `(before after)` pairs and `:whole-characters` counts. Other buffers/files
+are not checked, no rollback/save/retry is introduced, and read-only successes
+keep their prior output. All diagnostics still use F3's private artifact limiter.
+
+333 offline ERT and warnings-as-errors compilation; Emacs 30.2 runtime, 28.1 API
+compatibility inspected but not separately runtime-tested. No provider/user-Emacs
+calls or replay of the private transcript. See [ADR-0016](adr/0016-evaluation-error-diagnostics.md).
+
+## Edit/save/check instruction recipe
+
+The system prompt now distinguishes edited/saved/checked and requires rereading
+changed ranges after the last check. Unsaved edits are not checked by disk
+commands; there is no implicit save/discard. Loaded features/commands do not prove
+an active language backend or actual fresh diagnostics. Inspect mode variables,
+not mode commands, and query the configured checker or project check command.
+
+An eighth executable example uses `process-file` with a fresh disposable output
+buffer and combined stdout/stderr, returning exit/output/cwd/file identity. It
+refuses unsaved/unvisited buffers before execution. Only integer exit 0 supports
+success claims or running built binaries. CHECKER/argv/cwd remain project choices;
+there is no new tool, runner/backend adapter or runtime enforcement gate. All
+seven earlier examples stay intact; prompt length is 5033 characters (<5037).
+EOF helper errors now show requested and available whole-buffer line ranges.
+
+341 ERT and strict compilation include the actual prompt examples, edit/save/check/
+reread workflow, empty failure/signal results, output isolation and one real
+synthetic subprocess with stderr/exit 2. No model/provider or user-Emacs calls.
+See [ADR-0017](adr/0017-edit-save-check-workflow.md).
+
 ## Post-MVP F4: pigo-style compaction
 
 `emacs-agent-compaction.el` contains provider-independent config, estimates,

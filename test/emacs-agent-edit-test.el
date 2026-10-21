@@ -272,7 +272,7 @@
   (should (string-match-p "emacs-agent-replace-region" emacs-agent-system-prompt))
   (should (string-match-p "save-buffer" emacs-agent-system-prompt))
   (should (string-match-p (regexp-quote "BASE+I") emacs-agent-system-prompt))
-  (should (string-match-p "On OLD mismatch or stale tick, reread" emacs-agent-system-prompt))
-  (should (string-match-p "bypass a rejected replacement" emacs-agent-system-prompt)))
+  (should (string-match-p "On mismatch/stale tick reread/recompute" emacs-agent-system-prompt))
+  (should (string-match-p "never bypass rejection" emacs-agent-system-prompt)))
 
 ;;; emacs-agent-edit-test.el ends here

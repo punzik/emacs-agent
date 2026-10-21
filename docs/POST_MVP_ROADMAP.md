@@ -2,7 +2,7 @@
 
 **Статус:** F0, F0b, F0c, ограниченный F1, lifecycle/UI F2, минимальный F3, F4, F6 и минимальный F8 реализованы; F5 отложен; F7 исключён;
 инструментированные live F2/F4 smoke ещё отдельно. Устранён измеренный секундный pretty-print
-autosave stall. 310 offline ERT и byte compilation с
+autosave stall. 341 offline ERT и byte compilation с
 warnings-as-errors проходят. Для буферного редактирования F0 есть пользовательский
 live smoke и подтверждение undo; отдельный live smoke F0b ещё не выполнялся.
 Остальные post-MVP этапы не реализованы.
@@ -793,6 +793,37 @@ source не подменяется журналом/случайным буфе�
 скачок reader с пустой строки при `D`; separator anchors исправлены и покрыты
 регрессией, других подтверждённых замечаний нет. Live UI smoke пока нет;
 рабочий Emacs не hot-loaded. Решение: [ADR-0015](adr/0015-conversation-ui-and-activity-status.md).
+
+### Диагностика eval после разбора пользовательского OCaml-диалога
+
+Согласовано: улучшить feedback внутри прежнего `eval_elisp`, без новых tools,
+preflight всех форм, rollback или обязательного execution ledger (ADR-0016).
+Реализованы read/eval phase, form/completed counts, character locations, bounded
+excerpt и best-effort syntax hint. Короткий noninteractive stack содержит только
+имена функций и доступную loaded signature, не аргументы/closure environments.
+Обычные caught errors/throws/quit и частичные эффекты сохраняют поведение.
+
+Source-buffer net delta показывает rename/kill, tick, modified и полный размер;
+остальные буферы/файлы не проверяются. Сводка не меняет point/restriction/undo,
+не сохраняет и не переисполняет код. F3 limiter/artifact permissions остаются.
+333 offline ERT и strict compile; runtime Emacs 30.2, 28.1 API inspected. Приватный
+исходный диалог не переисполнялся, provider/live Emacs calls не выполнялись.
+
+### Edit → save → check после второго OCaml-диалога
+
+Согласован и добавлен минимальный instruction/recipe этап (ADR-0017), не новый
+model tool или checker adapter. Prompt различает edited/saved/checked, запрещает
+неявный save/discard ради проверок и требует integer exit 0 вместо пустого output.
+Нужно перечитывать изменённые области после последней проверки. Наличие команды/
+feature не равно активному backend или свежей диагностике; mode flags читаются,
+а не включаются вызовом command ради проверки состояния.
+
+Восьмой реальный пример prompt: modified/unvisited guard, fresh disposable output,
+combined stdout/stderr, exit/cwd/checked-file. Ранее существовавшие семь примеров
+сохранены; уплотнение даёт 5033 символа, ниже прежнего лимита 5037 (не token metric).
+EOF error хелпера показывает requested/available lines, не меняя strict bounds.
+341 ERT и strict compile, включая synthetic real subprocess и workflow regression.
+Поведение LLM после изменения не измерено; приватные логи не переисполнялись.
 
 ## 6. Следующие кандидаты, но не обязательства текущего плана
 
