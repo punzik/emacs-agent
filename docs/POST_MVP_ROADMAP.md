@@ -2,7 +2,7 @@
 
 **Статус:** F0, F0b, F0c, ограниченный F1, lifecycle/UI F2, минимальный F3, F4, F6 и минимальный F8 реализованы; F5 отложен; F7 исключён;
 инструментированные live F2/F4 smoke ещё отдельно. Устранён измеренный секундный pretty-print
-autosave stall. 341 offline ERT и byte compilation с
+autosave stall. 379 offline ERT и byte compilation с
 warnings-as-errors проходят. Для буферного редактирования F0 есть пользовательский
 live smoke и подтверждение undo; отдельный live smoke F0b ещё не выполнялся.
 Остальные post-MVP этапы не реализованы.
@@ -824,6 +824,33 @@ combined stdout/stderr, exit/cwd/checked-file. Ранее существовав
 EOF error хелпера показывает requested/available lines, не меняя strict bounds.
 341 ERT и strict compile, включая synthetic real subprocess и workflow regression.
 Поведение LLM после изменения не измерено; приватные логи не переисполнялись.
+
+### Отдельный текстовый канал у единственного eval_elisp
+
+Согласован optional `texts` array строк (ADR-0018), не новый tool и не произвольные
+bindings. `emacs-agent-texts` — свежий список копий строк в пределах вызова, для
+любых хелперов/native functions; OLD/NEW/batch не требуют вложенного Lisp quoting.
+Нет unescape/eval данных, неявного сохранения или обхода guards. Старые calls без
+texts сохраняются. Typed canonical vectors проходят storage/restore, native wire,
+clone/fork и budget/compaction как data, не исполняясь при чтении истории.
+
+Раскрытый journal показывает indexed payloads и сохраняет reader при result update.
+Prompt содержит реальный JSON-пример OLD/NEW с quotes/newline, 5392 символа (<5400).
+379 ERT и strict compile проверяют actual JSON/SSE, native wire, inert restore в
+свежем процессе, clone/fork и budget/compaction. Исправлен UTF-8 read snapshots:
+NUL не должен включать binary autodetection и искажать Unicode.
+
+### Синхронный process helper после четвёртого OCaml-диалога
+
+`texts` подтверждён в реальном диалоге: кавычки/переводы строк дошли с первой
+попытки, финальные проверки имели exit 0 и reread. Оставшиеся ошибки Elisp —
+повторяемый шаблон запуска процессов. Добавлен обычный хелпер
+`emacs-agent-run-process` (ADR-0019): literal argv без shell-обёртки, свежий
+объединённый output buffer, `:output/:directory/:command/:exit`, относительный
+lookup executable относительно cwd, без save/retry/интерпретации успеха.
+`emacs-agent-replace-region` называет конкретный недопустимый аргумент.
+Runtime/model benchmark не выполнялся; приватные диалоги не считаются
+контролируемым доказательством улучшения LLM.
 
 ## 6. Следующие кандидаты, но не обязательства текущего плана
 

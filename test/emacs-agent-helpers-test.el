@@ -300,4 +300,29 @@
                   "scoped changed-range checks suffice"))
     (should (string-match-p (regexp-quote rule) emacs-agent-system-prompt))))
 
+(ert-deftest emacs-agent-helpers-replace-region-names-the-bad-argument ()
+  (with-temp-buffer
+    (insert "original")
+    (dolist (case '(("start" 1.0 6 "" "")
+                   ("end" 1 6.0 "" "")
+                   ("OLD" 1 6 7 "")
+                   ("NEW" 1 6 "original" nil)
+                   (":tick" 1 6 "original" "new")))
+      (let* ((name (car case))
+             (rest (cdr case))
+             (err (should-error
+                   (apply #'emacs-agent-replace-region
+                          (current-buffer)
+                          (nth 0 rest) (nth 1 rest) (nth 2 rest) (nth 3 rest)
+                          (list :tick (if (equal name ":tick") nil 0))))))
+        (should (string-prefix-p
+                 (format "%s must be"
+                         (if (string-prefix-p ":" name) name (upcase name)))
+                 (error-message-string err)))))
+    (should (equal (buffer-string) "original"))
+    (let ((err (should-error (emacs-agent-replace-region
+                              (current-buffer) 7 6 "" "" :tick 0))))
+      (should (string-match-p "START 7 exceeds END 6"
+                              (error-message-string err))))))
+
 ;;; emacs-agent-helpers-test.el ends here

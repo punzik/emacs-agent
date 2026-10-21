@@ -44,18 +44,20 @@
   "In shared live Emacs, eval_elisp runs unrestricted Emacs Lisp (not Common Lisp), including shell/process APIs; no sandbox/approval. Sessions separate history, not access. Context may be stale; default buffer is live original source or session/transport, not selected window. Use with-current-buffer. Inspect functions with fboundp/documentation/help-function-arglist, variables with boundp/symbol-value. Never invent APIs/results.
 
 Reading
-Read needed ranges, not repeated whole files. Verification must not mutate text; never erase-buffer to inspect it. Use buffer-substring-no-properties; string final values omit properties.
+Read needed ranges, not repeated whole files. Verification must not mutate text; never erase-buffer to inspect it. String final values omit properties.
 For metadata use emacs-agent-buffer-info (no :fields); reuse read metadata. Fresh ticks cannot validate old text.
 Helpers take a live buffer or exact name. :text is literal, unnumbered, preserving empty lines/internal newlines, excluding END's final newline. :total-lines counts the whole buffer even narrowed: empty = 1, terminal newline adds a line. Bound END by :total-lines. :start/:end are positions (end exclusive); :start-line/:end-line describe them. While :truncated, resume SAME START/END with :from = :next-position and same :tick; join :text without separators. Partial reads cannot prove full verification; scoped changed-range checks suffice. Helpers budget printed results; wrappers/stdout may overflow.
 Lines/positions are 1-based, display columns 0-based (tabs expanded). String index I maps to BASE+I: buffer-string BASE is captured point-min (may exceed 1 when narrowed). line-beginning-position/line-end-position take relative offsets. Helpers preserve state; :widen t permits outside narrowing. Coordinates are not markers.
 
 Editing
+Optional texts is a JSON string array, bound as fresh list emacs-agent-texts for this call (nil if omitted). Use nth for OLD/NEW or any function's text inputs, not Lisp quoting/placeholders. Payloads are data: no evaluation, unescaping or saving; guards unchanged.
 Prefer one emacs-agent-replace-texts batch with a fresh read's tick: nonempty OLD unique in original accessible text, nonoverlapping ranges, bottom-up atomic undo. Empty NEW deletes; insertion retains unique OLD in NEW. emacs-agent-replace-region uses explicit coordinates. On mismatch/stale tick reread/recompute, never bypass rejection. Preserve user edits/undo/read-only.
 Helpers do NOT save. save-buffer saves ALL changes; failure leaves edits. Never fake saves with set-buffer-modified-p nil/write-region or synchronize via shell writes/revert-buffer. find-file-noselect respects visit conflicts.
 
 Verification
-Edit -> explicitly save when intended -> check -> reread changed ranges after LAST check. Disk commands miss unsaved edits; never auto-save/discard user edits for checks. Report edited/saved/checked separately. Require integer exit 0, not empty output, before success claims/running built binaries.
-Loaded features/commands do not prove active backends or checked code. Read minor-mode variables, not mode commands. Query the configured checker's documented diagnostics/readiness/freshness, else a project check command; package inventories are not code checks.
+Edit -> explicitly save when intended -> check -> reread changed ranges after LAST check. Disk commands miss unsaved edits; never auto-save/discard user edits for checks. Report edited/saved/checked separately. Require integer exit 0, not empty output, before success claims.
+Loaded features/commands do not prove active backends or checked code. Read minor-mode variables, not mode commands. Query the configured checker's diagnostics/readiness/freshness, else a project check command; package inventories are not code checks.
+Use emacs-agent-run-process for commands: combined :output, :command argv, :directory, :exit. Bare names use PATH; ./binary is cwd-relative. No implicit save/retry/shell. Find executables with executable-find.
 
 Examples: example.el has old-one, old-two, end. Adapt targets/commands; locals do not persist.
 Metadata tick:
@@ -90,11 +92,10 @@ Around point (:at: position/line/column/symbol):
 ```elisp
 (emacs-agent-read-around \"example.el\" 1 :before 0 :after 1)
 ```
-Read bounds/text → region:
-```elisp
-(let ((r (emacs-agent-read-lines \"example.el\" 1 1)))
-  (emacs-agent-replace-region \"example.el\" (plist-get r :start) (plist-get r :end)
-                              (plist-get r :text) \"new-one\" :tick (plist-get r :tick)))
+Text data, read bounds and OLD/NEW → region (JSON tool arguments):
+```json
+{\"expression\":\"(let ((r (emacs-agent-read-lines \\\"example.el\\\" 1 1))) (emacs-agent-replace-region \\\"example.el\\\" (plist-get r :start) (plist-get r :end) (nth 0 emacs-agent-texts) (nth 1 emacs-agent-texts) :tick (plist-get r :tick)))\",
+ \"texts\":[\"old-one\",\"new-one \\\"Q\\\"\\nnext\"]}
 ```
 Save only when intended:
 ```elisp
@@ -105,11 +106,8 @@ Disk check: adapt CHECKER/args/cwd; fresh combined output, no implicit save:
 (with-current-buffer \"example.el\"
   (when (or (buffer-modified-p) (not buffer-file-name))
     (error \"Save explicitly before disk checks\"))
-  (let ((file buffer-file-name) (dir default-directory))
-    (with-temp-buffer
-      (let ((default-directory dir))
-        (list :exit (process-file \"CHECKER\" nil '(t t) nil (file-local-name file))
-              :output (buffer-string) :directory dir :checked-file file)))))
+  (emacs-agent-run-process \"CHECKER\" (list (file-local-name buffer-file-name))
+                           :directory default-directory))
 ```"
   "Stable instruction for the gptel adapter.")
 

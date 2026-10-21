@@ -390,9 +390,10 @@ live list.  Durable snapshots require complete, consistent block metadata."
           (max emacs-agent-session--counter (string-to-number (match-string 1 id))))))
 
 (defun emacs-agent-store--read (file)
-  "Read FILE as inert data, rejecting trailing forms."
+  "Read UTF-8 FILE as inert data, rejecting trailing forms."
   (with-temp-buffer
-    (insert-file-contents file)
+    ;; Match the writer: NUL in literal data must not trigger binary detection.
+    (let ((coding-system-for-read 'utf-8-unix)) (insert-file-contents file))
     (goto-char (point-min))
     (let ((value (read (current-buffer))))
       (forward-comment (point-max))

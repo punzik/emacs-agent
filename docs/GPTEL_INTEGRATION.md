@@ -675,6 +675,53 @@ reread workflow, empty failure/signal results, output isolation and one real
 synthetic subprocess with stderr/exit 2. No model/provider or user-Emacs calls.
 See [ADR-0017](adr/0017-edit-save-check-workflow.md).
 
+## Scoped text payloads in the existing tool
+
+`eval_elisp` has required expression and optional `texts` (array, items string).
+The gptel parser's arrays are vectors; canonical history preserves that shape.
+Execution passes the array to `emacs-agent-eval`, which exposes copied strings in
+a fresh dynamic list `emacs-agent-texts`. No text parsing/unescape or implicit
+save is added; every existing helper/native function can consume the strings.
+Omitted/empty arrays bind nil, nested calls cannot inherit payload accidentally,
+and argument/list/string mutation inside eval cannot alter stored originals.
+
+Live/canonical args accept only expression and optional string vector, without
+unknown/duplicate keys; key order is immaterial. Malformed data fails before
+execution/tool-call audit/canonical insertion. Existing expression-only records
+remain valid. Snapshots/schema 3, protocol fields, native wire JSON, clone/fork,
+budget and compaction use the complete args data; no payload is hidden from
+model context accounting or activated during restore. Journal expansion renders
+indexed raw texts beside expression/result without execution.
+
+One actual system-prompt example now uses JSON arguments with OLD/NEW including
+quotes/newline; the test harness decodes JSON as data and executes only expression.
+Prompt is 5392 characters (<5400); no token/performance improvement is claimed.
+363 ERT and strict compilation include real JSON/SSE dispatch, native wire, inert
+fresh-child restoration, clone/fork and compaction. The new NUL/Unicode roundtrip
+caught an existing snapshot autodetection bug: reads now explicitly match the
+writer's UTF-8 encoding. No provider or user-Emacs calls.
+See [ADR-0018](adr/0018-scoped-text-payloads.md).
+
+## Synchronous process helper inside eval
+
+`emacs-agent-run-process` (ADR-0019) wraps the repetitive ad-hoc process
+boilerplate observed in real usage: literal argv, no shell wrapping, fresh
+private combined stdout/stderr buffer (always removed), `:output`, expanded
+`:directory`, actual `:command` and `:exit` as last key. Bare names use PATH;
+qualified paths are expanded against `:directory` then localized, fixing
+relative executable lookup; remote program names must share DIRECTORY's host.
+No save/retry/success interpretation/generated-file cleanup; launch errors and
+quit propagate. The system prompt's disk-check example uses it and mentions
+`executable-find`; prompt is 5393 characters (<5400), not a token metric.
+
+`emacs-agent-replace-region` now names the specific offending argument
+(START/END/OLD/NEW/:tick) with its actual value; guards/order unchanged.
+
+379 ERT and strict compilation cover real `sh` stderr/exit, literal argv,
+cwd/relative executables, output isolation, remote mocks without connections,
+validation-before-launch, source preservation, F3 artifacts and the
+texts channel. No provider or user-Emacs calls.
+
 ## Post-MVP F4: pigo-style compaction
 
 `emacs-agent-compaction.el` contains provider-independent config, estimates,

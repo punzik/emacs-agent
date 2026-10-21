@@ -53,12 +53,14 @@ The tested commit exposes :tool-use as ordered call plists."
                       (puthash id t (emacs-agent-spike-calls run))
                       (unless (equal (gptel-tool-name tool) "eval_elisp")
                         (error "Unexpected tool"))
+                      (unless (emacs-agent-eval--args-p args)
+                        (error "Malformed eval_elisp arguments"))
                       (emacs-agent-spike--event run 'tool-call args)
                       (let* ((source (emacs-agent-spike-source run))
                              (buffer (if (buffer-live-p source) source
                                        (emacs-agent-spike-transport run)))
                              (result (with-current-buffer buffer
-                                       (emacs-agent-eval (plist-get args :expression)))))
+                                       (emacs-agent-eval (plist-get args :expression) (plist-get args :texts)))))
                         (emacs-agent-spike--event run 'tool-result result)
                         ;; Arbitrary Lisp could have cancelled this very run.
                         (unless (eq (emacs-agent-spike-status run) 'cancelled)
@@ -101,9 +103,11 @@ There are no sessions, persistence, metadata filtering or streaming yet."
                   (list (gptel-make-tool
                          :name "eval_elisp" :category "emacs-agent-spike"
                          :function #'emacs-agent-eval :confirm t
-                         :description "Execute arbitrary Lisp in the live Emacs."
+                         :description "Execute unrestricted Emacs Lisp in the live Emacs."
                          :args '((:name "expression" :type string
-                                  :description "One or more Lisp forms.")))))
+                                  :description "One or more Emacs Lisp forms.")
+                                 (:name "texts" :type array :items (:type string) :optional t
+                                  :description "Text data, bound as list emacs-agent-texts.")))))
       (condition-case err
           (setf (emacs-agent-spike-request run)
                 (gptel-request text :buffer transport :stream nil

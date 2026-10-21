@@ -2,17 +2,23 @@
 (require 'ert)
 (require 'emacs-agent)
 
-(defun emacs-agent-prompt-test--examples ()
-  "Extract actual fenced Elisp examples from the system prompt."
+(defun emacs-agent-prompt-test--specs ()
+  "Extract actual fenced Elisp/JSON tool arguments from the system prompt."
   (with-temp-buffer
     (insert emacs-agent-system-prompt)
     (goto-char (point-min))
     (let (examples)
-      (while (re-search-forward "^```elisp\n" nil t)
-        (let ((start (point)))
+      (while (re-search-forward "^```\\(elisp\\|json\\)\n" nil t)
+        (let ((start (point)) (language (match-string 1)))
           (should (search-forward "\n```" nil t))
-          (push (buffer-substring-no-properties start (- (point) 4)) examples)))
+          (let ((body (buffer-substring-no-properties start (- (point) 4))))
+            (push (if (equal language "json") (json-parse-string body :object-type 'plist)
+                    (list :expression body)) examples))))
       (nreverse examples))))
+
+(defun emacs-agent-prompt-test--examples ()
+  "Return expression source from each actual fenced example."
+  (mapcar (lambda (spec) (plist-get spec :expression)) (emacs-agent-prompt-test--specs)))
 
 (defmacro emacs-agent-prompt-test--fixture (&rest body)
   "Run BODY with a disposable visited example.el buffer and FILE."
@@ -39,9 +45,10 @@
        (delete-directory directory t))))
 
 (ert-deftest emacs-agent-prompt-all-examples-execute-with-real-evaluator ()
-  (let ((examples (emacs-agent-prompt-test--examples)))
+  (let ((examples (emacs-agent-prompt-test--specs)))
     (should (= (length examples) 8))
-    (cl-loop for source in examples for index from 0 do
+    (cl-loop for spec in examples for index from 0
+             for source = (plist-get spec :expression) do
              (emacs-agent-prompt-test--fixture
                (when (= index 6) (goto-char (point-max)) (insert "unsaved\n"))
                (let* ((tick (buffer-chars-modified-tick))
@@ -55,7 +62,7 @@
                                                      default-directory (current-buffer)) calls)
                                          (insert "checker-output\n")
                                          0)))
-                              (emacs-agent-eval source))))
+                              (emacs-agent-eval source (plist-get spec :texts)))))
                  (should (string-prefix-p "\n=> " wire))
                  (should-not (string-match-p "\\[truncated" wire))
                  (let ((value (read (substring wire 4))))
@@ -81,7 +88,7 @@
                      (4 (should (equal (plist-get value :text) "old-one\nold-two"))
                         (should (= (plist-get (plist-get value :at) :position) 1)))
                      (5 (should (eq (plist-get value :changed) t))
-                        (should (equal (buffer-string) "new-one\nold-two\nend\n"))
+                        (should (equal (buffer-string) "new-one \"Q\"\nnext\nold-two\nend\n"))
                         (undo-only 1)
                         (should (equal (buffer-string) original)))
                      (6 (should-not value)
@@ -90,7 +97,7 @@
                      (7 (should (= (plist-get value :exit) 0))
                         (should (equal (plist-get value :output) "checker-output\n"))
                         (should (equal (plist-get value :directory) (file-name-directory file)))
-                        (should (equal (plist-get value :checked-file) file))
+                        (should (equal (plist-get value :command) (list "CHECKER" file)))
                         (should (= (length calls) 1))
                         (should (equal (cl-subseq (car calls) 0 6)
                                        (list "CHECKER" nil '(t t) nil (list file) (file-name-directory file))))
@@ -160,7 +167,7 @@
                              (emacs-agent-eval (nth 7 (emacs-agent-prompt-test--examples))) 4))))
           (should (equal (plist-get result :exit) status))
           (should (equal (plist-get result :output) ""))
-          (should (equal (plist-get result :checked-file) file))
+          (should (equal (plist-get result :command) (list "CHECKER" file)))
           (should (equal (buffer-string) original))
           (should-not (buffer-modified-p)))))))
 
@@ -233,7 +240,7 @@
         (should (= (plist-get checked :exit) 2))
         (should (equal (plist-get checked :output) "out\nerr\n"))
         (should (equal (plist-get checked :directory) (file-name-directory file)))
-        (should (equal (plist-get checked :checked-file) file))
+        (should (equal (plist-get checked :command) (list "CHECKER" file)))
         (should (equal (buffer-string) original))
         (should-not (buffer-modified-p))))))
 
@@ -241,11 +248,12 @@
   (dolist (rule '("Disk commands miss unsaved edits" "never auto-save/discard user edits"
                   "Require integer exit 0" "reread changed ranges after LAST check"
                   "Report edited/saved/checked separately" "Read minor-mode variables"
-                  "diagnostics/readiness/freshness" "package inventories are not code checks"))
+                  "diagnostics/readiness/freshness" "package inventories are not code checks"
+                  "Use emacs-agent-run-process" "./binary is cwd-relative" "executable-find"))
     (should (string-match-p (regexp-quote rule) emacs-agent-system-prompt))))
 
 (ert-deftest emacs-agent-prompt-examples-replace-not-inflate-old-instructions ()
   ;; Recorded pre-rewrite length, not an estimate of token usage.
-  (should (< (length emacs-agent-system-prompt) 5037)))
+  (should (< (length emacs-agent-system-prompt) 5400)))
 
 ;;; emacs-agent-prompt-test.el ends here

@@ -261,6 +261,22 @@ Do not select windows, steal focus, or force readers of old entries to scroll."
         (set-marker (nth 2 entry) nil)
         (set-marker (nth 3 entry) nil)))))
 
+(defun emacs-agent-log--tool-source (args)
+  "Render ARGS as inert expression and indexed literal text payloads."
+  (concat (format "%s" (plist-get args :expression))
+          (when (plist-member args :texts)
+            (let ((texts (plist-get args :texts)))
+              (if (vectorp texts)
+                  (if (zerop (length texts)) "\n\ntexts: []"
+                    (mapconcat
+                     (lambda (index)
+                       (format "\n\ntexts[%d]:\n%s" index
+                               (if (stringp (aref texts index))
+                                   (substring-no-properties (aref texts index))
+                                 (format "%S" (aref texts index)))))
+                     (number-sequence 0 (1- (length texts))) ""))
+                (format "\n\ntexts: %S" texts))))))
+
 (defun emacs-agent-log--payload (type payload)
   "Return display text for TYPE and PAYLOAD, never evaluating their contents."
   (pcase type
@@ -278,7 +294,7 @@ Do not select windows, steal focus, or force readers of old entries to scroll."
                         (plist-get payload :tokens-before) (plist-get payload :cut)
                         (plist-get payload :summary)))
     ('tool-call (format "eval_elisp %s\n%s" (plist-get payload :id)
-                        (plist-get (plist-get payload :args) :expression)))
+                        (emacs-agent-log--tool-source (plist-get payload :args))))
     ('tool-result (format "%s\n%s" (plist-get payload :id) (plist-get payload :result)))
     (_ (if (stringp payload) (substring-no-properties payload) (format "%s" payload)))))
 
@@ -447,7 +463,8 @@ Return local markers and overlays; never write to EVENT."
          (let* ((expression (format "%s" (plist-get (plist-get payload :args) :expression)))
                 (block (emacs-agent-log--block
                         event (concat "eval_elisp  " (emacs-agent-log--short expression))
-                        expression t "Result not recorded.")))
+                        (emacs-agent-log--tool-source (plist-get payload :args))
+                        t "Result not recorded.")))
            (puthash (list run (plist-get payload :id)) block emacs-agent-log--tools)))
         ('tool-result
          (let ((block (gethash (list run (plist-get payload :id)) emacs-agent-log--tools)))

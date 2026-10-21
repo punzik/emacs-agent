@@ -112,6 +112,47 @@ Caller has established the accessible restriction."
                   (setq budget (max 1 (/ budget 2))))))))))
     result))
 
+(cl-defun emacs-agent-run-process (program args &key (directory default-directory))
+  "Run PROGRAM synchronously with string ARGS in DIRECTORY.
+ARGS is a proper list or vector.  No shell is used unless PROGRAM is one.
+Bare names use native `process-file' lookup; paths with a directory
+component are expanded against DIRECTORY, fixing relative executable
+lookup.  A qualified remote PROGRAM must use DIRECTORY's host.  Arguments
+are passed literally, without path expansion, quoting or unescaping.
+
+Return :output (fresh combined stdout/stderr), :directory (expanded
+cwd), :command (program and argv actually passed) and :exit (integer or
+signal string).  :command names the invocation, not a resolved binary.
+Output precedes metadata and :exit is last so F3 tails retain status.
+`eval_elisp' applies its normal F3 limiter.  Launch errors and quit
+propagate; no exit status is invented.
+
+This does not save, edit or select the caller's buffer, infer which
+file was checked, interpret success, retry commands or clean generated
+files.  Process side effects are not rolled back.  The private output
+buffer is always removed.  Use an existing asynchronous workflow for
+long commands."
+  (unless (and (stringp program) (> (length program) 0))
+    (error "PROGRAM must be a nonempty string"))
+  (unless (and (or (vectorp args) (proper-list-p args)) (cl-every #'stringp args))
+    (error "ARGS must be a proper list or vector of strings"))
+  (unless (stringp directory) (error "DIRECTORY must be a string"))
+  (let* ((dir (file-name-as-directory (expand-file-name (substring-no-properties directory))))
+         (program (substring-no-properties program))
+         (remote (file-remote-p program))
+         (argv (mapcar #'substring-no-properties args)))
+    (when (and remote (not (equal remote (file-remote-p dir))))
+      (error "Remote PROGRAM must use DIRECTORY's host"))
+    (let ((command (cons (if (file-name-directory program)
+                             (file-local-name (expand-file-name program dir))
+                           program)
+                         argv)))
+      (with-temp-buffer
+        (let* ((default-directory dir)
+               (status (apply #'process-file (car command) nil '(t t) nil argv)))
+          (list :output (buffer-substring-no-properties (point-min) (point-max))
+                :directory dir :command command :exit status))))))
+
 (cl-defun emacs-agent-read-lines (buffer start end &key widen (limit 4096) from tick)
   "Read inclusive absolute START..END lines of live BUFFER.
 Preserve empty lines, including the terminal empty line after a newline.
@@ -231,9 +272,17 @@ This does NOT save.  Save explicitly in BUFFER with `save-buffer', never
 fake saving with `set-buffer-modified-p' or direct `write-region'.  A later
 save error leaves the successfully edited buffer available for inspection.
 Undo follows normal Emacs lifetime/size limits, not persistent disk history."
-  (unless (and (integerp start) (integerp end) (<= start end)
-               (stringp old) (stringp new) (integerp tick))
-    (error "Expected positions, OLD/NEW strings and explicit integer :tick"))
+  (unless (integerp start)
+    (error "START must be an integer position; got %s" (emacs-agent-eval--brief start 80)))
+  (unless (integerp end)
+    (error "END must be an integer position; got %s" (emacs-agent-eval--brief end 80)))
+  (unless (<= start end) (error "START %d exceeds END %d" start end))
+  (unless (stringp old)
+    (error "OLD must be a string; got %s" (emacs-agent-eval--brief old 80)))
+  (unless (stringp new)
+    (error "NEW must be a string; got %s" (emacs-agent-eval--brief new 80)))
+  (unless (integerp tick)
+    (error ":tick must be an explicit integer; got %s" (emacs-agent-eval--brief tick 80)))
   (with-current-buffer (emacs-agent-helpers--buffer buffer)
     (emacs-agent-helpers--tick tick)
     (when buffer-read-only (error "Buffer is read-only"))

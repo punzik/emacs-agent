@@ -183,9 +183,39 @@ Reader hints are syntax-table diagnostics, not a second execution or reader."
                     "Current form was not evaluated; earlier effects are not rolled back."))))
     ((error quit) "\nEvaluation diagnostics unavailable; effects are not rolled back.")))
 
-(defun emacs-agent-eval (expression)
+(defvar emacs-agent-texts nil
+  "Text strings supplied to the current `emacs-agent-eval' invocation.
+Dynamically bound to a fresh list during each call, including across buffers.
+Texts are data, never implicitly read as Lisp or unescaped.  The default is nil.")
+
+(defun emacs-agent-eval--texts-p (texts)
+  "Whether TEXTS is a proper list or vector containing only strings."
+  (and (or (vectorp texts) (proper-list-p texts))
+       (cl-every #'stringp texts)))
+
+(defun emacs-agent-eval--args-p (args)
+  "Whether ARGS is a supported JSON tool argument plist.
+JSON arrays are vectors; explicit null is not an array.  Direct Lisp callers
+of `emacs-agent-eval' may also supply a proper list as its optional argument."
+  (and (proper-list-p args) (cl-evenp (length args))
+       (stringp (plist-get args :expression))
+       (let (seen)
+         (cl-loop for key in args by #'cddr
+                  always (and (memq key '(:expression :texts))
+                              (not (memq key seen)) (push key seen))))
+       (or (not (plist-member args :texts))
+           (and (vectorp (plist-get args :texts))
+                (emacs-agent-eval--texts-p (plist-get args :texts))))))
+
+(defun emacs-agent-eval (expression &optional texts)
   "Evaluate all forms in EXPRESSION, returning output and the final value.
 Execution is unrestricted and synchronous, with lexical binding enabled.
+Optional TEXTS is a vector or proper list of strings, exposed as a fresh list
+in `emacs-agent-texts' during this invocation only.  Characters are copied
+verbatim, without properties, unescaping or evaluation.  Omitted TEXTS means an
+empty list, never inherited payload from an outer invocation.  Any helper or
+Elisp function can consume these ordinary strings; no editing guards change.
+Invalid TEXTS signals before evaluating any form.
 Previously evaluated forms are not rolled back if a later form fails.
 `princ' output is captured; `message' still goes to the normal message log.
 Successful nil is printed as `nil'; errors and quits are explicitly labelled.
@@ -196,7 +226,10 @@ explicit printing inside EXPRESSION retain their normal Lisp semantics.
 Errors include phase, form count and character locations.  Net changes to the
 source buffer are reported separately; other buffers and external effects are
 not inspected.  Diagnostics never restore or roll back editor state."
-  (let ((output (generate-new-buffer " *emacs-agent-eval-output*"))
+  (unless (emacs-agent-eval--texts-p texts)
+    (error "TEXTS must be an array or proper list of strings"))
+  (let ((emacs-agent-texts (mapcar #'substring-no-properties texts))
+        (output (generate-new-buffer " *emacs-agent-eval-output*"))
         (input (generate-new-buffer " *emacs-agent-eval-input*"))
         (source (current-buffer))
         (before (emacs-agent-eval--source-state (current-buffer)))

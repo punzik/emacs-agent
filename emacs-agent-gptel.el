@@ -159,8 +159,7 @@ Additional user inputs in that group require a unique :input-id."
               (unless (and (stringp id) (not (string-empty-p id))
                            (not (gethash (gptel--openai-format-tool-id id) ids))
                            (equal (plist-get message :name) "eval_elisp")
-                           (proper-list-p args) (= (length args) 2)
-                           (eq (car args) :expression) (stringp (cadr args))
+                           (emacs-agent-eval--args-p args)
                            (stringp (plist-get message :result)))
                 (error "Malformed or duplicate paired tool record"))
               (emacs-agent-gptel--validate-protocol (plist-get message :protocol))
@@ -308,6 +307,8 @@ reset/cleanup support is added, so gptel can finish its own FSM safely."
   (pcase-let ((`(,id ,tool ,args ,continuation) entry))
     (unless (equal (gptel-tool-name tool) "eval_elisp")
       (error "Unexpected tool: %s" (gptel-tool-name tool)))
+    (unless (emacs-agent-eval--args-p args)
+      (error "Malformed eval_elisp arguments: expected expression and optional texts array of strings"))
     (puthash id 'executing (emacs-agent-run-tool-call-ids run))
     (emacs-agent-session-record run 'tool-call (list :id id :args args))
     (if (not (emacs-agent-gptel--live-p run))
@@ -318,7 +319,7 @@ reset/cleanup support is added, so gptel can finish its own FSM safely."
                        (emacs-agent-run-transport-buffer run)))
              ;; No selected-window switch, widening, or stale point restoration.
              (result (with-current-buffer buffer
-                       (emacs-agent-eval (plist-get args :expression))))
+                       (emacs-agent-eval (plist-get args :expression) (plist-get args :texts))))
              (record (list :role 'tool :run-id (emacs-agent-run-id run)
                            :id id :name "eval_elisp" :args args :result result
                            :protocol (copy-tree (emacs-agent-run-response-protocol run)))))
@@ -616,9 +617,11 @@ Slot access and state names are isolated pinned-gptel contracts."
                             (list (gptel-make-tool
                                    :name "eval_elisp" :category "emacs-agent"
                                    :function #'emacs-agent-eval :confirm t
-                                   :description "Execute arbitrary Lisp in the shared live Emacs."
+                                   :description "Execute unrestricted Emacs Lisp in the shared live Emacs. Text payloads are data."
                                    :args '((:name "expression" :type string
-                                            :description "One or more Lisp forms.")))))
+                                            :description "One or more Emacs Lisp forms; use emacs-agent-texts for payloads.")
+                                           (:name "texts" :type array :items (:type string) :optional t
+                                            :description "Literal text strings, bound as list emacs-agent-texts for this call. No Lisp quoting, unescaping or evaluation.")))))
                 (let ((fsm (emacs-agent-gptel--make-fsm run)))
                   (setf (emacs-agent-run-request-handle run) fsm)
                   (gptel-request (emacs-agent-gptel--history run)

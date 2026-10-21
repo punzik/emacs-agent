@@ -61,7 +61,7 @@ FSM state does. Cancel/error preserves already received partial text.
 The default view is a conversation, not an audit dump: distinct user headings,
 plain assistant text and one paired `eval_elisp` block per call/result. Tools
 start with a bounded result preview (up to three logical lines/400 characters), while
-expansion shows retained expression/result text. F3 truncation/unavailable notices
+expansion shows retained expression, indexed `texts` payloads and result text. F3 truncation/unavailable notices
 remain visible even when folded; expansion does not retrieve an external artifact.
 Reasoning is initially folded (`emacs-agent-log-collapse-reasoning`, now t), as
 are tool bodies (`emacs-agent-log-collapse-tools`). `emacs-agent-show-reasoning`
@@ -422,6 +422,35 @@ an evaluation error may occur after mutations within that same form. There is
 restriction and undo; they do not repair the editor or certify saved-file equality.
 See [ADR-0016](docs/adr/0016-evaluation-error-diagnostics.md).
 
+### Text data without embedded Elisp string literals
+
+The same single tool accepts optional `texts`, a **JSON array of strings**:
+
+```json
+{
+  "expression": "(emacs-agent-replace-region \"test.ml\" 1 4 (nth 0 emacs-agent-texts) (nth 1 emacs-agent-texts) :tick 210)",
+  "texts": ["old", "let () = print_endline \"Привет\"\n"]
+}
+```
+
+Adapt target/range/tick to a fresh read. Text is escaped only for JSON, not again
+as a Lisp string literal inside `expression`. Quotes, Unicode, real newlines and
+literal `\\n` remain distinct; no unescaping, joining or evaluation is applied.
+`emacs-agent-texts` is a fresh list available during this invocation, across
+buffers and to **any** text helper/native Elisp function. Use `nth` for OLD/NEW or
+multiple batch replacements; helper signatures, guards and return formats stay
+unchanged. Omitted `texts` and `[]` bind an empty list. Explicit JSON null or a
+non-string array is rejected before execution; old expression-only calls work.
+
+The runtime list/strings are copies, so edits to them cannot modify original
+arguments/history. Nested calls have independent bindings; outer bindings are
+restored on success/error/quit/throw. Direct Lisp callers may pass a vector or
+proper list as the optional second argument to `emacs-agent-eval`. Unrestricted
+code can deliberately retain or evaluate data; this is not a sandbox or a secret
+channel. Payloads are retained as ordinary private tool arguments in logs/history,
+restored as inert data, included in budget/compaction and visible on expansion.
+See [ADR-0018](docs/adr/0018-scoped-text-payloads.md).
+
 ### Editing live buffers with undo
 
 Prefer one exact-text batch through `eval_elisp`:
@@ -494,13 +523,21 @@ which backend actually serves this buffer and whether its results are fresh.
 Loaded features or available commands alone do not prove working code checks;
 read minor-mode variables rather than activating modes to inspect their state.
 
-The system prompt includes a tested `process-file` recipe: refuse modified or
-unvisited buffers, capture fresh combined stdout/stderr in a disposable buffer,
-and return `:exit`, `:output`, `:directory`, `:checked-file`. Adapt program, argv
-and working directory to the project. Require **integer exit 0**, not empty output,
-before claiming success or running a built binary. This is an example inside
-`eval_elisp`, not another tool or an automatic execution/save gate. `process-file`
-is synchronous; use an appropriate existing async workflow for long checks.
+`emacs-agent-run-process` is a synchronous process helper usable inside
+`eval_elisp`: no shell wrapping, literal argv (list or vector of strings),
+combined stdout/stderr in a fresh disposable buffer, and a result with
+`:output`, `:directory` (expanded cwd), `:command` (actual program+argv) and
+`:exit` (integer or signal string; last key so tails keep status). Bare names
+use PATH lookup; paths with a directory component are expanded against
+`:directory`, fixing relative executable lookup; remote program names must use
+the same host. It never saves, edits, retries, cleans generated files or
+interprets success. Launch errors/quit propagate; no status is invented.
+Adapt program/args to the project and require **integer exit 0**, not empty
+output, before success claims. Synchronous; use an existing async workflow for
+long checks. See [ADR-0019](docs/adr/0019-process-helper.md).
+
+`emacs-agent-replace-region` names the offending argument (START/END/OLD/NEW/
+:tick) with its actual value instead of a generic requirements list.
 
 EOF read errors now include the requested range and actual whole-buffer line
 count instead of silently clamping END. See [ADR-0017](docs/adr/0017-edit-save-check-workflow.md).
@@ -712,7 +749,7 @@ normal minibuffer hooks/keymaps; the agent does not supply a custom editor.
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 341 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 379 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh
