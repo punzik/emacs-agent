@@ -568,10 +568,15 @@ The completion picker defaults to newest, `C-u` asks for a name, and the command
 rejects changed history/selection after either minibuffer. Source and involved
 selections must remain idle. Failed/cancelled turns, individual tools and partial
 turns are not endpoints; tool pairs/protocol reasoning stay intact. A fork has no
-pending recovery, handles, usage anchor or inherited execution source. Only an
-explicit working-buffer invocation freshly binds that buffer, as with clone.
+pending recovery, handles, usage anchor or execution source in the core copy.
+The UI binds the invoking working buffer, or the journal owner's last working
+buffer if still live. It captures that reference before prompting and checks
+liveness when showing the fork; it never substitutes a journal/selected buffer or
+loads an execution source from copied event payloads. This fixes immediate ask
+from a journal-created fork; a genuinely closed source still requires a working-
+buffer invocation.
 
-275 ERT plus warnings-as-errors compile and diff-check pass. Tests cover real
+276 ERT plus warnings-as-errors compile and diff-check pass. Tests cover real
 pinned-gptel dry-run wire comparisons, mid-run and summary-only boundaries,
 continuation/fork-of-fork, late/duplicate completions, excluded future queued audit,
 provenance validation, save/pointer failures and backend-free offline subprocess

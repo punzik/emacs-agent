@@ -259,7 +259,14 @@
                              (emacs-agent-session-id owner)))
               (should (eq (emacs-agent-session-selected nil) fork))
               (should (eq shown (emacs-agent-session-log-buffer fork)))
-              (should-not (emacs-agent-session-last-source-buffer fork)))))
+              (should (eq (emacs-agent-session-last-source-buffer fork) source))
+              (with-current-buffer (emacs-agent-session-log-buffer fork)
+                (cl-letf (((symbol-function 'read-from-minibuffer)
+                           (lambda (&rest _) "continue from fork journal")))
+                  (let ((next (emacs-agent-ask)))
+                    (should (eq (emacs-agent-run-session next) fork))
+                    (should (eq (emacs-agent-run-source-buffer next) source))
+                    (emacs-agent-test--complete next "continued")))))))
         (should (eq (emacs-agent-session-last-source-buffer owner) source))
         (should-not (emacs-agent-session-messages selected))))))
 
@@ -470,6 +477,22 @@
           (should (emacs-agent-gptel--history view))
           (should-not (string-match-p "FUTURE-UNSUPPORTED"
                                       (prin1-to-string (emacs-agent-store--snapshot fork)))))))))
+
+(ert-deftest emacs-agent-fork-dead-working-buffer-is-not-replaced-by-journal ()
+  (emacs-agent-conversation-test--fixture
+    (let ((working (generate-new-buffer " *fork-dead-source*")) owner)
+      (unwind-protect
+          (progn
+            (with-current-buffer working
+              (setq owner (emacs-agent-run-session (emacs-agent-fork-test--turn "owner"))))
+            (kill-buffer working)
+            (with-current-buffer (emacs-agent--log-buffer owner)
+              (let ((fork (emacs-agent-session-fork 2)))
+                (should-not (emacs-agent-session-last-source-buffer fork))
+                (with-current-buffer (emacs-agent--log-buffer fork)
+                  (should-error (emacs-agent-session-origin) :type 'user-error))
+                (should-not (emacs-agent-session-active-run fork)))))
+        (when (buffer-live-p working) (kill-buffer working))))))
 
 (provide 'emacs-agent-fork-test)
 ;;; emacs-agent-fork-test.el ends here

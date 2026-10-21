@@ -2,7 +2,7 @@
 
 **Статус:** F0, F0b, F0c, ограниченный F1, lifecycle/UI F2, минимальный F3, F4, F6 и минимальный F8 реализованы; F5 отложен; F7 исключён;
 инструментированные live F2/F4 smoke ещё отдельно. Устранён измеренный секундный pretty-print
-autosave stall. 275 offline ERT и byte compilation с
+autosave stall. 276 offline ERT и byte compilation с
 warnings-as-errors проходят. Для буферного редактирования F0 есть пользовательский
 live smoke и подтверждение undo; отдельный live smoke F0b ещё не выполнялся.
 Остальные post-MVP этапы не реализованы.
@@ -751,12 +751,15 @@ Bookmarks, selected-head navigation и отдельная branch summary пок�
 не копировать future queued inputs. Summary-only fork имеет только inherited
 summary event, без raw audit; исходный архив/журнал не меняются.
 
-**Проверка:** 275 ERT, warnings-as-errors compile и diff-check. Проверены actual
+**Проверка:** 276 ERT, warnings-as-errors compile и diff-check. Проверены actual
 pinned-gptel wire/tool/reasoning replay, summary-only/mid-run cuts, продолжение и
 fork-of-fork, stale minibuffer, late/duplicate completions, malformed provenance,
 failed writes/pointers и backend-free fresh-process restore/fork. UI явно
 сообщает об отсутствии отката редактора. Provider/live UI smoke не выполнялся;
-рабочий Emacs не hot-loaded. Независимое read-only review не нашло подтверждённых
+рабочий Emacs не hot-loaded. Live report выявил отсутствие working-buffer binding
+при fork из журнала: UI теперь привязывает живой рабочий буфер owner, без копирования
+runtime из архива. Регрессия проверяет настоящий ask из нового журнала; закрытый
+source не подменяется журналом/случайным буфером. Независимое read-only review не нашло подтверждённых
 проблем; отдельный offline probe с реальной F4 recompaction и mock summary
 проверил growth/fork-of-fork/save/restore.
 

@@ -520,7 +520,11 @@ an inherited-summary entry, not the old raw journal. Other forks retain the
 chosen audit prefix, excluding future queued inputs and later events.
 
 The original is unchanged. The fork is selected and focused, with the same
-save-before-selection and source-binding rules as clone. It inherits no pending
+save-before-selection rules as clone. From a working buffer, that buffer is bound
+for subsequent asks. From a journal, the owner's last working buffer is bound if
+still live, so the fork can be continued immediately. A closed working buffer is
+never replaced by the journal or an arbitrary selected buffer; ask once from a
+working buffer to establish a new source. The core fork still copies no pending
 recovery, runtime handles or usage anchor. Changes during the boundary/name
 minibuffer cause an explicit retry rather than a silently different fork.
 **Buffers, files and processes are NOT rolled back; tools are never replayed.**
@@ -612,7 +616,7 @@ normal minibuffer hooks/keymaps; the agent does not supply a custom editor.
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 275 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 276 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh

@@ -56,9 +56,21 @@ historical end can be less than the current archive length after continuation;
 a summary boundary is not tied to a later compaction cut. F6 clone provenance
 without a boundary remains valid. No session/run slots or migration are added.
 
+## Journal continuation fix
+
+The initial UI bound a source only when fork was invoked from a working buffer.
+User smoke found that a fork from a journal then failed its first ask with
+"Session's working buffer is gone" even though the parent's source was alive.
+The user-initiated fork now captures the owner's last working buffer before
+prompting and binds it if still live when showing the fork. This is an explicit
+UI context binding, not part of the inert core copy. Never substitute the journal
+or an unrelated selected buffer when the source really died. An ask from a
+working buffer establishes a new source in that case. Regression tests exercise
+ask from a nonselected owner's fork journal and the closed-source case.
+
 ## Verification
 
-275 ERT and warnings-as-errors compilation pass, including actual pinned-gptel
+276 ERT and warnings-as-errors compilation pass, including actual pinned-gptel
 wire comparisons across context policies, tool IDs/reasoning, mid-run summary
 cuts, summary-only continuation and fork-of-fork, future queued-audit exclusion,
 late/duplicate completion rejection, failed writes/pointers, idle and stale

@@ -356,6 +356,10 @@ With a prefix argument, ask for NAME.  Editor/files are NOT rolled back."
   (interactive)
   (let* ((origin (emacs-agent--conversation-origin))
          (source (or (plist-get origin :session) (user-error "No conversation here")))
+         ;; User-initiated journal fork keeps its owner's live working context,
+         ;; not a buffer reconstructed from copied history or event payloads.
+         (working-source (or (plist-get origin :source)
+                             (emacs-agent-session-last-source-buffer source)))
          (points (emacs-agent-session--fork-points source))
          (messages-tail (last (emacs-agent-session-messages source)))
          (events-tail (last (emacs-agent-session-events source)))
@@ -385,7 +389,7 @@ With a prefix argument, ask for NAME.  Editor/files are NOT rolled back."
                  (eq compaction (emacs-agent-session-compaction source)))
       (user-error "Conversation history changed; choose the fork point again"))
     (let ((fork (emacs-agent-session--fork source end name)))
-      (emacs-agent--conversation-show fork (plist-get origin :source))
+      (emacs-agent--conversation-show fork working-source)
       (message "Fork selected; buffers, files and processes were NOT rolled back")
       fork)))
 
