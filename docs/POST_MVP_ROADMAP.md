@@ -2,7 +2,7 @@
 
 **Статус:** F0, F0b, F0c, ограниченный F1, lifecycle/UI F2, минимальный F3, F4, F6 и минимальный F8 реализованы; F5 отложен; F7 исключён;
 инструментированные live F2/F4 smoke ещё отдельно. Устранён измеренный секундный pretty-print
-autosave stall. 276 offline ERT и byte compilation с
+autosave stall. 306 offline ERT и byte compilation с
 warnings-as-errors проходят. Для буферного редактирования F0 есть пользовательский
 live smoke и подтверждение undo; отдельный live smoke F0b ещё не выполнялся.
 Остальные post-MVP этапы не реализованы.
@@ -763,6 +763,33 @@ source не подменяется журналом/случайным буфе�
 проблем; отдельный offline probe с реальной F4 recompaction и mock summary
 проверил growth/fork-of-fork/save/restore.
 
+### UI после F8 — читаемый диалог и состояние работы
+
+Реализован согласованный первый slice, без Markdown и новой схемы данных:
+
+- TAB/`<tab>` работают на кнопке-заголовке и внутри блока; RET/click сохранены.
+  Локальные `▸`/`▾`, folded reasoning по умолчанию, безопасная позиция при collapse.
+  Заголовок/весь reasoning серые через configurable face с inherit `shadow`.
+- Нормальный диалог без run IDs и lifecycle/usage chatter; `D` показывает аудит.
+  Важные ошибки/паузы/instruction warnings и recovery user text остаются видимы.
+- Call/result объединены по run/call ID, preview ограничено; F3 notice не скрывается.
+  Раскрытие не перечитывает artifacts и не выполняет Lisp. История модели неизменна.
+- Короткие header/buffer names, IDs остаются в selector. Streaming инкрементальный;
+  диагностический rebuild явный, сохраняет folds и привязку reader к событию.
+- `emacs-agent-status-mode` показывает waiting/responding/eval/compacting/paused и
+  положительную обычную очередь через `global-mode-string`, idle скрыт. Без timer,
+  сканирования архивов на text delta и глобального per-token redraw. Пользовательский
+  `mode-line-format` не заменяется; режим можно отключить. Короткие `AI:wait/reply/
+  eval/compact/pause` окружены пробелами; prefix/state/queue labels configurable,
+  Customize обновляет cache сразу, при `setq` доступен explicit refresh.
+- Runtime-only state hook не пишет аудит и не влияет на model projection/schema;
+  ошибка UI не срывает запрос, отмена перед WAIT не допускает transport launch.
+
+306 ERT, warnings-as-errors compile и diff-check прошли. Независимое review нашло
+скачок reader с пустой строки при `D`; separator anchors исправлены и покрыты
+регрессией, других подтверждённых замечаний нет. Live UI smoke пока нет;
+рабочий Emacs не hot-loaded. Решение: [ADR-0015](adr/0015-conversation-ui-and-activity-status.md).
+
 ## 6. Следующие кандидаты, но не обязательства текущего плана
 
 - **Model/thinking selection:** session/run-local настройки, реальные capabilities,
@@ -840,10 +867,11 @@ loading. Любые новые пользовательские настройк
 7. После каждого этапа обновить README/интеграционные ограничения, зафиксировать
    проверенные факты и оставшиеся вопросы. Коммит — только по запросу пользователя.
 
-**Рекомендуемый следующий шаг:** restart и пользовательская проверка F6
-(new/select/clone и project/global restart). F5 отложен, F7 исключён; минимальный F8 готов к пользовательской проверке
-(`emacs-agent-session-fork`, включая summary-only). Следующий scope согласовать
-после проверки. Pre-F6 файлы оставлены архивом без импорта. F2 пользователь
+**Рекомендуемый следующий шаг:** пользовательская UI-проверка после restart:
+TAB/RET/мышь, streaming/folds, `D`, mode-line вне журнала, paused/compaction и
+продолжение fork. F5 отложен, F7 исключён; F6/F8 и UI имеют offline покрытие,
+отдельный provider smoke остаётся самостоятельной проверкой. Следующий scope
+согласовать после проверки. Pre-F6 файлы оставлены архивом без импорта. F2 пользователь
 проверил и одобрил commit; отдельной инструментированной full real-provider
 matrix нет. Исходный F4 не hot-loaded в pre-F4 Emacs; поздняя смена framing
 не меняет layouts structs.

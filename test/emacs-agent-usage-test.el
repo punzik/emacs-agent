@@ -194,6 +194,8 @@
           (should (equal history (emacs-agent-session-messages restored)))
           (emacs-agent--render-log restored)
           (with-current-buffer (emacs-agent-session-log-buffer restored)
+            (should-not (string-match-p "HTTP #1 (received)" (buffer-string)))
+            (emacs-agent-log-toggle-details)
             (should (string-match-p "HTTP #1 (received)" (buffer-string)))
             (should (string-match-p "Run: 1 requests, 1 with usage" (buffer-string)))
             (should (string-match-p "cache-read=0" (buffer-string)))

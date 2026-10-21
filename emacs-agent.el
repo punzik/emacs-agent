@@ -15,6 +15,7 @@
 (require 'emacs-agent-log)
 (require 'emacs-agent-store)
 (require 'emacs-agent-input)
+(require 'emacs-agent-status)
 (require 'tabulated-list)
 
 (declare-function emacs-agent-input-forget "emacs-agent-input" (input))
@@ -306,7 +307,7 @@ With a prefix argument, ask for optional NAME.  Requires idle conversations."
     (emacs-agent-session--rename session name)
     (when (buffer-live-p (emacs-agent-session-log-buffer session))
       (with-current-buffer (emacs-agent-session-log-buffer session)
-        (rename-buffer (format "*emacs-agent: %s*" (emacs-agent--session-name session)) t)
+        (rename-buffer (format "*emacs-agent: %s*" (emacs-agent-log--label session)) t)
         (force-mode-line-update)))
     session))
 
@@ -650,6 +651,9 @@ Still-live steering stays steering."
       (emacs-agent-pending-refresh))
     (display-buffer buffer)
     buffer))
+
+;; Enable once on initial package load, preserving a user's later opt-out.
+(unless (featurep 'emacs-agent) (emacs-agent-status-mode 1))
 
 (provide 'emacs-agent)
 ;;; emacs-agent.el ends here

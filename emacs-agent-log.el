@@ -6,6 +6,7 @@
 
 ;;; Code:
 (require 'button)
+(require 'seq)
 (require 'emacs-agent-session)
 (require 'emacs-agent-usage)
 
@@ -14,6 +15,11 @@
 (declare-function emacs-agent-resume "emacs-agent")
 (declare-function emacs-agent-steer "emacs-agent")
 (declare-function emacs-agent-pending "emacs-agent")
+
+(defface emacs-agent-log-reasoning-face
+  '((t (:inherit shadow)))
+  "Face for supplied reasoning, including its foldable header and body."
+  :group 'emacs-agent)
 
 (defcustom emacs-agent-show-reasoning t
   "Display supplied reasoning in newly rendered journal sections.
@@ -24,7 +30,7 @@ this setting to previously rendered sections."
 (defcustom emacs-agent-log-collapse-tools t
   "Initially fold tool arguments/results in newly rendered journal sections."
   :type 'boolean :group 'emacs-agent)
-(defcustom emacs-agent-log-collapse-reasoning nil
+(defcustom emacs-agent-log-collapse-reasoning t
   "Initially fold reasoning that the provider actually supplied."
   :type 'boolean :group 'emacs-agent)
 
@@ -104,10 +110,26 @@ Notification failures cannot strand a completed run or its FIFO."
 (defvar-local emacs-agent-log--cursor nil "Last consumed cons in the event list.")
 (defvar-local emacs-agent-log--tail nil "Last appendable text section, or nil.")
 
+(defvar-local emacs-agent-log-details nil
+  "Whether this journal displays diagnostic event details.")
+(defvar-local emacs-agent-log--tools nil)
+(defvar-local emacs-agent-log--folds nil)
+(defvar-local emacs-agent-log--locations nil)
+
+(defvar emacs-agent-log-section-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map button-map)
+    (define-key map (kbd "TAB") #'emacs-agent-log-toggle-section)
+    (define-key map (kbd "<tab>") #'emacs-agent-log-toggle-section)
+    map)
+  "Button bindings that keep TAB on the current section.")
+
 (defvar emacs-agent-log-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
     (define-key map (kbd "TAB") #'emacs-agent-log-toggle-section)
+    (define-key map (kbd "<tab>") #'emacs-agent-log-toggle-section)
+    (define-key map (kbd "D") #'emacs-agent-log-toggle-details)
     (define-key map (kbd "g") #'emacs-agent-log-refresh)
     (define-key map (kbd "a") #'emacs-agent-ask)
     (define-key map (kbd "C-c C-s") #'emacs-agent-steer)
@@ -123,15 +145,23 @@ TAB or click a section header to fold/unfold tools and reasoning.
 C-c C-k cancels, C-c C-c resumes a paused run, a asks from its working buffer.
 Closing the buffer does not cancel the run."
   (add-to-invisibility-spec 'emacs-agent-fold)
+  (setq-local emacs-agent-log--tools (make-hash-table :test #'equal)
+              emacs-agent-log--folds (make-hash-table :test #'equal)
+              emacs-agent-log--locations (make-hash-table :test #'equal))
   (setq-local header-line-format
               '(:eval (when emacs-agent-session--owner
-                        (let ((run (emacs-agent-session-active-run emacs-agent-session--owner)))
-                          (format " Agent %s: %s | queued: %d | inputs: %d"
-                                  (emacs-agent--session-name emacs-agent-session--owner)
-                                  (cond ((emacs-agent-session-compaction-job emacs-agent-session--owner) 'compacting)
-                                        (run (emacs-agent-run-status run)) (t 'idle))
-                                  (length (emacs-agent-session-pending-runs emacs-agent-session--owner))
-                                  (length (emacs-agent-session-inputs emacs-agent-session--owner))))))))
+                        (format " Agent %s%s"
+                                (replace-regexp-in-string
+                                 "%" "%%" (emacs-agent-log--label emacs-agent-session--owner))
+                                (if emacs-agent-log-details " | Details" ""))))))
+
+(defun emacs-agent-log--label (session)
+  "Return a short display label for SESSION, not a selector identity."
+  (let ((root (emacs-agent-session-project-root session))
+        (name (emacs-agent-session-name session)))
+    (format "%s / %s"
+            (if root (file-name-nondirectory (directory-file-name root)) "global")
+            (if (string-empty-p (or name "")) "conversation" name))))
 
 (defun emacs-agent--session-name (session)
   "Return a readable collision-resistant name for SESSION."
@@ -149,7 +179,7 @@ Closing the buffer does not cancel the run."
   (or (and (buffer-live-p (emacs-agent-session-log-buffer session))
            (emacs-agent-session-log-buffer session))
       (let ((buffer (generate-new-buffer
-                     (format "*emacs-agent: %s*" (emacs-agent--session-name session)))))
+                     (format "*emacs-agent: %s*" (emacs-agent-log--label session)))))
         (with-current-buffer buffer
           (emacs-agent-log-mode)
           (setq-local emacs-agent-session--owner session)
@@ -162,8 +192,25 @@ Closing the buffer does not cancel the run."
   "Toggle folding of OVERLAY's body; do not change canonical events."
   (unless (and (overlayp overlay) (overlay-buffer overlay))
     (user-error "No foldable section here"))
-  (overlay-put overlay 'invisible
-               (unless (overlay-get overlay 'invisible) 'emacs-agent-fold)))
+  (let* ((inhibit-read-only t)
+         (closed (not (overlay-get overlay 'invisible)))
+         (header (overlay-get overlay 'header))
+         (preview (overlay-get overlay 'preview)))
+    (when (or (and closed (<= (overlay-start overlay) (point))
+                   (< (point) (overlay-end overlay)))
+              (and (not closed) preview
+                   (<= (overlay-start preview) (point))
+                   (< (point) (overlay-end preview))))
+      (goto-char header))
+    (overlay-put overlay 'invisible (and closed 'emacs-agent-fold))
+    (when preview
+      (overlay-put preview 'invisible (unless closed 'emacs-agent-fold)))
+    (puthash (overlay-get overlay 'event-id) closed emacs-agent-log--folds)
+    (save-excursion
+      (goto-char header)
+      (subst-char-in-region (point) (1+ (point)) (char-after)
+                            (if closed ?▸ ?▾) t))
+    (set-buffer-modified-p nil)))
 
 (defun emacs-agent-log--button (button)
   "Toggle the section attached to BUTTON."
@@ -172,10 +219,14 @@ Closing the buffer does not cancel the run."
 (defun emacs-agent-log-toggle-section ()
   "Fold/unfold the tool or reasoning section at point."
   (interactive)
-  (emacs-agent-log--toggle
-   (or (get-text-property (point) 'emacs-agent-section)
-       (cl-find-if (lambda (overlay) (overlay-get overlay 'emacs-agent-section))
-                   (overlays-at (point))))))
+  (let* ((section (or (get-text-property (point) 'emacs-agent-section)
+                      (get-text-property (line-beginning-position) 'emacs-agent-section)
+                      (cl-find-if (lambda (overlay) (overlay-get overlay 'emacs-agent-section))
+                                  (overlays-at (point))))))
+    (emacs-agent-log--toggle
+     (if (and (overlayp section) (overlayp (overlay-get section 'emacs-agent-section)))
+         (overlay-get section 'emacs-agent-section)
+       section))))
 
 (defun emacs-agent-log--preserve-view (function)
   "Call FUNCTION preserving reader points, starts and pixel vscroll.
@@ -235,48 +286,189 @@ Do not select windows, steal focus, or force readers of old entries to scroll."
   "Choose a header face for TYPE."
   (pcase type
     ((or 'failed 'error 'cancelled) 'error)
-    ((or 'paused 'interrupted) 'warning)
+    ((or 'paused 'interrupted 'input-recovery 'compaction-stopped 'instructions) 'warning)
     ('completed 'success)
-    ('reasoning 'font-lock-comment-face)
+    ('reasoning 'emacs-agent-log-reasoning-face)
     (_ 'font-lock-keyword-face)))
 
+(defun emacs-agent-log--short (text &optional lines limit)
+  "Bound TEXT to LINES (default one) and LIMIT (default 100) characters."
+  (let* ((text (format "%s" (or text "")))
+         (part (mapconcat #'identity
+                          (seq-take (split-string text "\n") (or lines 1)) "\n"))
+         (limit (or limit 100)))
+    (if (or (> (length part) limit) (< (length part) (length text)))
+        (concat (substring part 0 (min (length part) limit)) "…")
+      part)))
+
+(defun emacs-agent-log--tool-preview (result)
+  "Bound RESULT's UI preview, retaining any capture-truncation notice.
+This does not read the artifact named in a notice."
+  (let ((text (format "%s" (or result ""))) (from 0) notice-start)
+    ;; Prefer the final capture notice, not similar text printed in the body.
+    (while (string-match "\n\\[truncated;" text from)
+      (setq notice-start (match-beginning 0) from (match-end 0)))
+    (let* ((notice (and notice-start (string-suffix-p "]" text)
+                        (substring text (1+ notice-start))))
+           (body (if notice (substring text 0 notice-start) text)))
+      (concat (emacs-agent-log--short body 3 400)
+              (when notice (concat "\n" notice))))))
+
+(defun emacs-agent-log--block (event label text &optional foldable preview)
+  "Insert a display block for EVENT with LABEL and retained TEXT.
+FOLDABLE bodies have a separate optional PREVIEW visible only when closed.
+Return local markers and overlays; never write to EVENT."
+  (goto-char (point-max))
+  (let* ((type (plist-get event :type))
+         (id (plist-get event :id))
+         (closed (gethash id emacs-agent-log--folds
+                          (if (eq type 'reasoning) emacs-agent-log-collapse-reasoning
+                            emacs-agent-log-collapse-tools)))
+         (header (copy-marker (point)))
+         (header-end (progn
+                       (unless (string-empty-p label)
+                         (insert (if foldable (if closed "▸ " "▾ ") "") label "\n"))
+                       (point)))
+         (preview-start (copy-marker (point)))
+         (preview-end (progn (when preview (insert preview "\n")) (point)))
+         (body-start (copy-marker (point)))
+         (body-end (progn (insert text) (copy-marker (point))))
+         overlay preview-overlay)
+    (puthash id header emacs-agent-log--locations)
+    ;; The separator is visible and belongs to this block for reader anchors.
+    (insert "\n\n")
+    (add-text-properties header (point) (list 'emacs-agent-event-id id))
+    (set-marker-insertion-type body-end t)
+    (when foldable
+      (setq overlay (make-overlay body-start body-end nil nil t))
+      (overlay-put overlay 'emacs-agent-section t)
+      (when (eq type 'reasoning)
+        (overlay-put overlay 'face 'emacs-agent-log-reasoning-face))
+      (overlay-put overlay 'header header)
+      (overlay-put overlay 'event-id id)
+      (overlay-put overlay 'invisible (and closed 'emacs-agent-fold))
+      (when preview
+        (setq preview-overlay (make-overlay preview-start preview-end))
+        (overlay-put preview-overlay 'invisible (unless closed 'emacs-agent-fold))
+        (overlay-put preview-overlay 'emacs-agent-section overlay)
+        (overlay-put overlay 'preview preview-overlay))
+      (make-text-button header (1- header-end)
+                        'keymap emacs-agent-log-section-map
+                        'action #'emacs-agent-log--button
+                        'emacs-agent-section overlay 'follow-link t))
+    (when (> header-end (marker-position header))
+      (add-text-properties header (1- header-end)
+                           (list 'face (if (eq type 'user) 'font-lock-function-name-face
+                                         (emacs-agent-log--face type)))))
+    (list :type type :run (plist-get event :run-id) :id id :header header
+          :preview-start preview-start :body-start body-start
+          :end body-end :overlay overlay)))
+
+(defun emacs-agent-log--tool-result (event block)
+  "Update paired tool BLOCK with EVENT, without rebuilding other history."
+  (let* ((result (plist-get (plist-get event :payload) :result))
+         (overlay (plist-get block :overlay))
+         (preview-overlay (overlay-get overlay 'preview))
+         (start (marker-position (plist-get block :preview-start)))
+         (end (plist-get block :end))
+         (result-start (overlay-get overlay 'result-start)))
+    ;; Replace only the bounded preview; keep the expression and reader markers.
+    (goto-char start)
+    (delete-region start (plist-get block :body-start))
+    (insert-before-markers (emacs-agent-log--tool-preview result) "\n")
+    (set-marker (plist-get block :preview-start) start)
+    (set-marker (plist-get block :body-start) (point))
+    (move-overlay preview-overlay start (point))
+    (unless result-start
+      (goto-char end)
+      (insert "\n\n")
+      (setq result-start (copy-marker (point)))
+      (overlay-put overlay 'result-start result-start))
+    (goto-char result-start)
+    (delete-region result-start end)
+    (insert (format "%s" result))
+    (set-marker end (point))
+    (move-overlay overlay (plist-get block :body-start) end)
+    (add-text-properties start end (list 'emacs-agent-event-id (plist-get block :id)))
+    (puthash (plist-get event :id) (plist-get block :header) emacs-agent-log--locations)))
+
 (defun emacs-agent-log--section (event)
-  "Append EVENT as a section, or append its delta to the last text section."
+  "Consume EVENT incrementally in the selected display policy."
   (let* ((type (plist-get event :type))
          (run (plist-get event :run-id))
-         (text (emacs-agent-log--payload type (plist-get event :payload)))
-         (foldable (memq type '(tool-call tool-result reasoning))))
-    (if (and (memq type '(assistant reasoning)) emacs-agent-log--tail
-             (eq type (plist-get emacs-agent-log--tail :type))
-             (equal run (plist-get emacs-agent-log--tail :run)))
-        (progn
-          (goto-char (plist-get emacs-agent-log--tail :end))
-          (insert text))
-      (goto-char (point-max))
-      (let* ((header-start (point))
-             (header (format "%s [%s]%s\n" type run (if foldable " (TAB to fold)" "")))
-             (header-end (progn (insert header) (point)))
-             (body-start (point))
-             (body-end (progn (insert text) (copy-marker (point))))
-             overlay)
-        ;; Exclude the separator; later chunks extend only the body.
-        (insert "\n\n")
-        (set-marker-insertion-type body-end t)
-        (when foldable
-          (setq overlay (make-overlay body-start (marker-position body-end) nil nil t))
-          (overlay-put overlay 'emacs-agent-section t)
-          (overlay-put overlay 'invisible
-                       (when (if (eq type 'reasoning) emacs-agent-log-collapse-reasoning
-                               emacs-agent-log-collapse-tools)
-                         'emacs-agent-fold))
-          (make-text-button header-start (1- header-end)
-                            'action #'emacs-agent-log--button
-                            'emacs-agent-section overlay 'follow-link t))
-        (add-text-properties header-start (1- header-end)
-                             (list 'face (emacs-agent-log--face type)))
-        (setq emacs-agent-log--tail
-              (when (memq type '(assistant reasoning))
-                (list :type type :run run :end body-end :overlay overlay)))))))
+         (payload (plist-get event :payload)))
+    (cond
+     ((memq type '(assistant-end reasoning-end))
+      (setq emacs-agent-log--tail nil)
+      (when emacs-agent-log-details
+        (emacs-agent-log--block event (format "%s [%s]" type run) (format "%S" event))))
+     ((and (eq type 'reasoning) (not emacs-agent-show-reasoning))
+      (setq emacs-agent-log--tail nil))
+     (emacs-agent-log-details
+      (setq emacs-agent-log--tail nil)
+      (emacs-agent-log--block event (format "%s [%s] %s" type run (plist-get event :id))
+                              (concat (when (memq type '(usage usage-total))
+                                        (concat (emacs-agent-log--payload type payload) "\n\n"))
+                                      (format "%S" event))
+                              (memq type '(reasoning tool-call tool-result))))
+     ((and (eq type 'instructions) (plist-get payload :warnings))
+      (setq emacs-agent-log--tail nil)
+      (emacs-agent-log--block event "Project instruction warning"
+                              (string-join (plist-get payload :warnings) "\n")))
+     ((not (memq type '(assistant reasoning user steering tool-call tool-result
+                                 compacted inherited-summary input-recovery
+                                 failed error cancelled paused interrupted compaction-stopped
+                                 unsupported-protocol))) nil)
+     ((and (memq type '(assistant reasoning)) emacs-agent-log--tail
+           (eq type (plist-get emacs-agent-log--tail :type))
+           (equal run (plist-get emacs-agent-log--tail :run)))
+      (goto-char (plist-get emacs-agent-log--tail :end))
+      (let ((start (point)))
+        (insert (emacs-agent-log--payload type payload))
+        (add-text-properties start (point)
+                             (list 'emacs-agent-event-id (plist-get emacs-agent-log--tail :id))))
+      (puthash (plist-get event :id) (plist-get emacs-agent-log--tail :header)
+               emacs-agent-log--locations))
+     (t
+      (setq emacs-agent-log--tail nil)
+      (pcase type
+        ((or 'assistant 'reasoning)
+         (setq emacs-agent-log--tail
+               (emacs-agent-log--block event (if (eq type 'assistant) "" "Reasoning")
+                                       (emacs-agent-log--payload type payload)
+                                       (eq type 'reasoning))))
+        ('user (emacs-agent-log--block event "You" (emacs-agent-log--payload type payload)))
+        ('steering
+         (emacs-agent-log--block
+          event "You · steering"
+          (mapconcat (lambda (input) (or (plist-get (plist-get input :run) :user-text) ""))
+                     payload "\n\n")))
+        ('tool-call
+         (let* ((expression (format "%s" (plist-get (plist-get payload :args) :expression)))
+                (block (emacs-agent-log--block
+                        event (concat "eval_elisp  " (emacs-agent-log--short expression))
+                        expression t "Result not recorded.")))
+           (puthash (list run (plist-get payload :id)) block emacs-agent-log--tools)))
+        ('tool-result
+         (let ((block (gethash (list run (plist-get payload :id)) emacs-agent-log--tools)))
+           (if block (emacs-agent-log--tool-result event block)
+             (emacs-agent-log--block event "Tool result · unmatched"
+                                     (format "%s" (plist-get payload :result)) t
+                                     (emacs-agent-log--tool-preview (plist-get payload :result))))))
+        ((or 'compacted 'inherited-summary)
+         (emacs-agent-log--block event
+                                 (if (eq type 'compacted) "Context compacted" "Inherited summary")
+                                 (if (listp payload) (or (plist-get payload :summary) "")
+                                   (emacs-agent-log--payload type payload)) t))
+        ('input-recovery
+         (emacs-agent-log--block
+          event "Unsent input · C-c C-p to inspect"
+          (mapconcat (lambda (input) (or (plist-get (plist-get input :run) :user-text) ""))
+                     payload "\n\n")))
+        ((or 'failed 'error 'cancelled 'paused 'interrupted 'compaction-stopped
+             'unsupported-protocol)
+         (emacs-agent-log--block event (symbol-name type)
+                                (emacs-agent-log--payload type payload))))))))
 
 (defun emacs-agent--render-log (session)
   "Consume only newly appended SESSION events, preserving the visible reader.
@@ -289,20 +481,73 @@ Folding state remains local to the live view and never changes model history."
              (events (if emacs-agent-log--cursor (cdr emacs-agent-log--cursor)
                        (emacs-agent-session-events session))))
          (while events
-           (let ((event (car events)))
-             (if (or (memq (plist-get event :type) '(assistant-end reasoning-end))
-                     (and (eq (plist-get event :type) 'reasoning)
-                          (not emacs-agent-show-reasoning)))
-                 (setq emacs-agent-log--tail nil)
-               (emacs-agent-log--section event)))
+           (emacs-agent-log--section (car events))
            (setq emacs-agent-log--cursor events events (cdr events))))))
-    (set-buffer-modified-p nil)
-    (force-mode-line-update)))
+    (set-buffer-modified-p nil)))
 
 (defun emacs-agent--refresh-log (session _event)
   "Update SESSION only if its journal is live; callbacks never resurrect it."
   (when (buffer-live-p (emacs-agent-session-log-buffer session))
     (emacs-agent--render-log session)))
+
+(defun emacs-agent-log--anchor (position)
+  "Describe POSITION relative to a stable first event in the view."
+  (let* ((position (max (point-min) (min position (point-max))))
+         (id (or (get-text-property position 'emacs-agent-event-id)
+                 (and (> position (point-min))
+                      (get-text-property (1- position) 'emacs-agent-event-id))))
+         (marker (and id (gethash id emacs-agent-log--locations))))
+    (list id (if marker (- position marker) 0) (= position (point-max)))))
+
+(defun emacs-agent-log--anchor-position (anchor)
+  "Resolve ANCHOR after a display-policy rebuild."
+  (if (nth 2 anchor) (point-max)
+    (let ((marker (gethash (car anchor) emacs-agent-log--locations)))
+      ;; A details-only event may have disappeared.  Stay near the preceding
+      ;; visible event, rather than jumping to the end of the conversation.
+      (unless (or marker (null (car anchor)))
+        (cl-loop for event in (emacs-agent-session-events emacs-agent-session--owner)
+                 do (when (gethash (plist-get event :id) emacs-agent-log--locations)
+                      (setq marker (gethash (plist-get event :id) emacs-agent-log--locations)))
+                 until (equal (plist-get event :id) (car anchor))))
+      (if marker
+          (min (or (next-single-property-change marker 'emacs-agent-event-id) (point-max))
+               (+ marker (max 0 (cadr anchor))))
+        (point-min)))))
+
+(defun emacs-agent-log-toggle-details ()
+  "Rebuild this disposable view with diagnostic details toggled.
+Retain fold choices by first event ID; never flush or modify session history."
+  (interactive)
+  (unless emacs-agent-session--owner (user-error "Not an agent journal"))
+  (let ((anchor (emacs-agent-log--anchor (point)))
+        (windows (mapcar (lambda (window)
+                           (list window
+                                 (emacs-agent-log--anchor (window-point window))
+                                 (emacs-agent-log--anchor (window-start window))
+                                 (window-vscroll window t)))
+                         (get-buffer-window-list (current-buffer) nil t)))
+        (inhibit-read-only t))
+    (dolist (overlay (append (car (overlay-lists)) (cdr (overlay-lists))))
+      (when (eq (overlay-get overlay 'emacs-agent-section) t)
+        (puthash (overlay-get overlay 'event-id) (and (overlay-get overlay 'invisible) t)
+                 emacs-agent-log--folds)))
+    (setq emacs-agent-log-details (not emacs-agent-log-details)
+          emacs-agent-log--cursor nil emacs-agent-log--tail nil)
+    (clrhash emacs-agent-log--tools)
+    (clrhash emacs-agent-log--locations)
+    (remove-overlays)
+    (erase-buffer)
+    (emacs-agent--render-log emacs-agent-session--owner)
+    (goto-char (emacs-agent-log--anchor-position anchor))
+    (dolist (entry windows)
+      (pcase-let ((`(,window ,position ,start ,vscroll) entry))
+        (when (and (window-live-p window) (eq (window-buffer window) (current-buffer)))
+          (set-window-point window (emacs-agent-log--anchor-position position))
+          (set-window-start window (emacs-agent-log--anchor-position start) t)
+          (set-window-vscroll window vscroll t))))
+    (set-buffer-modified-p nil)
+    (force-mode-line-update)))
 
 (defun emacs-agent-log-refresh ()
   "Render any unconsumed events in the current journal."

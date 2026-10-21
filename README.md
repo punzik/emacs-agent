@@ -52,20 +52,35 @@ streaming may return a single response, and nil requests non-streaming.
 Supplied reasoning is streamed as received, never reconstructed. Context metadata is kept
 separate from displayed user text.
 
-The journal is updated incrementally, without erasing/redrawing old entries.
+During streaming, the journal updates incrementally without redrawing old entries.
 Adjacent text/reasoning chunks share a section; model history contains one
 assembled assistant message per HTTP response, not one message per token.
 An HTTP stream-end signal does not release the FIFO; only the run's terminal
 FSM state does. Cancel/error preserves already received partial text.
 
-Tool arguments/results are initially folded (`emacs-agent-log-collapse-tools`);
-reasoning is initially visible (`emacs-agent-log-collapse-reasoning`).
-`emacs-agent-show-reasoning` can hide it in newly rendered views without
-removing stored/replay data; reopen the journal to apply it to old sections.
-`TAB`
-or click a foldable header to toggle; folding affects only the live view.
-The header line shows active status and queued-turn count. Journal-local
-bindings: `a` asks, `C-c C-k` cancels, `C-c C-c` resumes, `g` consumes any
+The default view is a conversation, not an audit dump: distinct user headings,
+plain assistant text and one paired `eval_elisp` block per call/result. Tools
+start with a bounded result preview (up to three logical lines/400 characters), while
+expansion shows retained expression/result text. F3 truncation/unavailable notices
+remain visible even when folded; expansion does not retrieve an external artifact.
+Reasoning is initially folded (`emacs-agent-log-collapse-reasoning`, now t), as
+are tool bodies (`emacs-agent-log-collapse-tools`). `emacs-agent-show-reasoning`
+can hide supplied reasoning, including in details, without deleting stored data;
+reopen the journal to apply this policy to existing sections. Both the reasoning
+header and body use `emacs-agent-log-reasoning-face`, inheriting theme-aware
+`shadow` (gray); change it with `M-x customize-face`.
+
+`TAB`, physical `<tab>`, `RET` or clicking a foldable header toggles it. TAB also
+works inside bodies/previews and leaves point on a visible header when hiding
+its current region. `▸`/`▾` reflect local state. `D` toggles diagnostic details:
+IDs, lifecycle events, frozen configuration and usage are inspectable without
+modifying history. Normal view keeps failures, pauses, instruction warnings and
+unsent-input notices visible, but omits routine service chatter. Explicit details
+rebuild preserves local folds and stays near the reader's event; streaming still
+only appends/updates the affected block. The header/buffer title use a short
+scope/name; collision-resistant IDs remain in conversation selectors.
+
+Journal-local bindings: `a` asks, `C-c C-k` cancels, `C-c C-c` resumes, `g` consumes any
 unrendered events. Readers of old text retain point/window-start/pixel scroll;
 only points already at the end follow new text. Windows are never selected
 by callbacks. Closing the journal does not cancel a run or resurrect the
@@ -74,6 +89,31 @@ Two non-project buffers share the global session; files in one project share
 its canonical root key. Symlinked local roots are resolved when possible;
 remote roots are never locally canonicalized. Same-basename projects remain
 separate, with distinct journal names.
+
+`emacs-agent-status-mode` is enabled on initial package load and adds a cached
+activity component to `global-mode-string`, visible outside the journal too:
+`" AI:wait "`, `" AI:reply "`, `" AI:eval "`, `" AI:compact "` or
+`" AI:pause "`. One outer space on each side separates it from neighbouring
+mode-line components. Multiple conversations aggregate as, for example,
+`" AI:reply×2 eval q:1 "`; `q:N` counts ordinary pending turns, not historical
+inputs. Idle is completely hidden, including spaces. There is no timer/spinner,
+billing estimate or global redraw per streaming fragment. Disable with
+`M-x emacs-agent-status-mode`; custom mode lines must include `global-mode-string`
+to display it. Your `mode-line-format` is not replaced.
+`emacs-agent-status-prefix` (default `"AI"`) and `emacs-agent-status-labels`
+configure the strings. Customize refreshes the cached display immediately;
+after `setq`, call `emacs-agent-status-update`. For example:
+
+```elisp
+(setq emacs-agent-status-prefix "AI"
+      emacs-agent-status-labels
+      '((waiting . "wait") (responding . "→") (eval_elisp . "eval")
+        (compacting . "compact") (paused . "pause") (queued . "q")))
+(emacs-agent-status-update)
+```
+
+An empty prefix omits it and its colon; missing labels fall back to state names.
+See [ADR-0015](docs/adr/0015-conversation-ui-and-activity-status.md).
 
 Asking from a journal retains its owner session and captures its last live
 working buffer, not the journal. If that buffer died, ask from a working
@@ -616,7 +656,7 @@ normal minibuffer hooks/keymaps; the agent does not supply a custom editor.
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 276 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 306 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh

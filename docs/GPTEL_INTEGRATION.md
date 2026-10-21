@@ -585,6 +585,44 @@ offline growth/recompaction/fork/restore probe passed using mocked summary deliv
 No provider or live user-Emacs UI smoke was performed.
 See [ADR-0014](adr/0014-minimal-fork-after-compaction.md).
 
+### Conversation UI and activity status
+
+`emacs-agent-log.el` now projects normal conversation separately from diagnostic
+`D` details. Normal view hides routine metadata/IDs/usage, pairs tool call/results
+by run/call ID, shows bounded previews with F3 notices and initially folds
+reasoning. Errors, instruction warnings and unsent user text stay visible.
+Details expose complete audit records and formatted usage, respecting the user's
+reasoning visibility choice. TAB and `<tab>` override the text-button keymap;
+RET/click still work. Local fold arrows, first-event anchors and marker-preserving
+result updates keep the reader near their content. Rebuilds occur only on explicit
+details toggles/reopening, never on every streaming fragment. No Markdown yet.
+
+`emacs-agent-status.el` caches aggregate live activity in `global-mode-string`.
+It is enabled once on initial package load and can be disabled without replacing
+`mode-line-format`. Waiting/responding/eval/compacting/paused and positive ordinary
+FIFO counts are shown; idle is hidden. No timers, fabricated billing or global
+per-token redisplay. Status uses short, space-padded `AI:wait/reply/eval/compact/pause`
+labels; `emacs-agent-status-prefix` and `emacs-agent-status-labels` customize them
+and the queue label. Customize refreshes the cache immediately; after `setq`,
+call `emacs-agent-status-update`. Reasoning header/body inherit `shadow` via
+`emacs-agent-log-reasoning-face`, including subsequent streamed text and details. Text/usage events do not scan archived conversations. Custom
+mode lines must display `global-mode-string` to show the indicator.
+
+Native event hooks and the new runtime-only `emacs-agent-session-state-functions`
+keep status current. The latter covers response-end, last-tool return, active-run
+release and WAIT before HTTP. Errors are isolated, liveness is rechecked after
+WAIT observers, and no observer is inserted into steering's claim-to-transport
+transaction. These notifications add no durable events, schema fields or model
+messages. Status loading does not require the provider/private summary FSM.
+
+306 ERT, warnings-as-errors compilation and diff-check pass, including actual
+keymap dispatch, fold/preview/reader regressions, diagnostics and canonical-history
+isolation, private snapshot roundtrips, native status transitions, error/cancel
+observers and offline subprocess restore. No provider/live UI smoke or user-Emacs
+hot-load. Independent review found a separator-line reader-anchor bug on `D`;
+event-owned separators and a regression test fix the jump. No other verified
+findings were reported. See [ADR-0015](adr/0015-conversation-ui-and-activity-status.md).
+
 ## Post-MVP F4: pigo-style compaction
 
 `emacs-agent-compaction.el` contains provider-independent config, estimates,

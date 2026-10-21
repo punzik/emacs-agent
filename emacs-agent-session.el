@@ -305,6 +305,21 @@ SOURCE and WINDOW identify its original editor location."
 (defvar emacs-agent-session-event-functions nil
   "Functions called with SESSION and EVENT after a structured event is recorded.")
 
+(defvar emacs-agent-session-state-functions nil
+  "Functions called with SESSION after a runtime-only state transition.
+Unlike event functions, these do not imply a durable audit record.")
+
+(defun emacs-agent-session--notify-state (session)
+  "Notify runtime observers of SESSION without recording history.
+A failed UI observer must not fail or strand the agent run."
+  (run-hook-wrapped
+   'emacs-agent-session-state-functions
+   (lambda (function &rest args)
+     (condition-case err (apply function args)
+       ((error quit) (message "Emacs Agent state handler: %s" (error-message-string err))))
+     nil)
+   session))
+
 (defun emacs-agent-session-record (run type payload &optional model-message)
   "Record TYPE and serializable PAYLOAD for RUN.
 If MODEL-MESSAGE is supplied, append it to the separate canonical API history.

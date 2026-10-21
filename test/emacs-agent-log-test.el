@@ -25,7 +25,7 @@
       (emacs-agent-session-record run 'assistant "lo")
       (should (= (point) position))
       (should (string-prefix-p prefix (buffer-string)))
-      (should (= (how-many "^assistant \\[" (point-min) (point-max)) 1))
+      (should-not (string-match-p "log-run" (buffer-string)))
       (should (string-match-p "hello" (buffer-string)))
       (should-not (buffer-modified-p))
       (should-error (insert "manual edit") :type 'buffer-read-only)
@@ -35,7 +35,7 @@
     (should (= (point) (point-max)))
     (emacs-agent-session-record run 'assistant-end nil)
     (emacs-agent-session-record run 'assistant "New response")
-    (should (= (how-many "^assistant \\[" (point-min) (point-max)) 2))))
+    (should (string-match-p "hello!\n\nNew response" (buffer-string)))))
 
 (ert-deftest emacs-agent-log-tools-fold-and-history-is-unchanged ()
   (emacs-agent-test-log
@@ -67,7 +67,7 @@
         (emacs-agent-session-record run 'reasoning-end nil)
         (emacs-agent-session-record run 'assistant "Answer")
         (should-not (invisible-p (- (point-max) 3)))
-        (should (= (how-many "^reasoning \\[" (point-min) (point-max)) 1))))))
+        (should (= (how-many "Reasoning" (point-min) (point-max)) 1))))))
 
 (ert-deftest emacs-agent-log-closed-view-does-not-resurrect-and-replays ()
   (emacs-agent-test-log
@@ -81,7 +81,7 @@
       (emacs-agent--render-log session)
       (with-current-buffer (emacs-agent-session-log-buffer session)
         (should (string-match-p "firstsecond" (buffer-string)))
-        (should (string-match-p "completed" (buffer-string)))
+        (should-not (string-match-p "completed" (buffer-string)))
         (let ((text (buffer-string)))
           (emacs-agent-log-refresh)
           (should (equal text (buffer-string))))))))

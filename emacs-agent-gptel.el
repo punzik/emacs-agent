@@ -300,6 +300,7 @@ reset/cleanup support is added, so gptel can finish its own FSM safely."
           ((error quit) (message "Emacs Agent abort: %s" (error-message-string err)))))
       (when (eq (emacs-agent-session-active-run session) run)
         (setf (emacs-agent-session-active-run session) nil)
+        (emacs-agent-session--notify-state session)
         (emacs-agent-gptel--start-next session)))))
 
 (defun emacs-agent-gptel--execute (run entry)
@@ -348,7 +349,8 @@ or another recursive event loop inside unrestricted tool Lisp."
               (emacs-agent-gptel--execute run (pop (emacs-agent-run-pending-tools run))))
             (when (and (emacs-agent-gptel--live-p run)
                        (null (emacs-agent-run-pending-tools run)))
-              (setf (emacs-agent-run-status run) 'requesting))))
+              (setf (emacs-agent-run-status run) 'requesting)
+              (emacs-agent-session--notify-state (emacs-agent-run-session run)))))
       (quit (emacs-agent-gptel--finish run 'cancelled "Tool dispatch interrupted"))
       (error (emacs-agent-gptel--finish run 'failed (error-message-string err))))
     ;; A different session may have received tools while Lisp pumped events.
@@ -405,8 +407,12 @@ This is a request-local FSM handler: gptel's global handlers are untouched."
   (when (and (emacs-agent-gptel--live-p run)
              (memq (car (plist-get (gptel-fsm-info fsm) :history)) '(INIT TRET)))
     (condition-case err
-        (unless (emacs-agent-compact-before-request run handlers fsm)
-          (emacs-agent-gptel--wait-ready run handlers fsm))
+        (progn
+          (setf (emacs-agent-run-status run) 'requesting)
+          (emacs-agent-session--notify-state (emacs-agent-run-session run))
+          (when (emacs-agent-gptel--live-p run)
+            (unless (emacs-agent-compact-before-request run handlers fsm)
+              (emacs-agent-gptel--wait-ready run handlers fsm))))
       ((error quit)
        (emacs-agent-gptel--finish run (if (eq (car err) 'quit) 'cancelled 'failed)
                                  (error-message-string err))))))
@@ -530,7 +536,8 @@ Slot access and state names are isolated pinned-gptel contracts."
            ;; End of ONE HTTP response, not necessarily the whole tool loop.
            (emacs-agent-gptel--flush-assistant run)
            (when (eq (emacs-agent-run-status run) 'streaming)
-             (setf (emacs-agent-run-status run) 'requesting)))
+             (setf (emacs-agent-run-status run) 'requesting)
+             (emacs-agent-session--notify-state (emacs-agent-run-session run))))
           (`(tool-call . ,calls)
            (emacs-agent-gptel--response-protocol run info)
            (emacs-agent-gptel--flush-assistant run)
