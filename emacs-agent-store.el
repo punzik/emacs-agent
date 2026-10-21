@@ -27,9 +27,20 @@ states and tool boundaries are always saved immediately."
            (equal root (file-name-as-directory root)) (equal key root))
     (eq key 'global)))
 
+(defun emacs-agent-store-id-handle (id)
+  "Return conversation ID's 64-hex handle for display and file naming.
+Canonical conversation IDs are \"session-\" plus one 64-hex hash; the
+handle is that hash itself, so the saved file name and shortened labels
+visibly match the full ID. Any other ID shape falls back to sha256 of
+the whole ID. Handles never replace identity: registry keys, restore
+validation and stored :id remain the full ID."
+  (if (string-match "\\`session-\\([[:xdigit:]]\\{64\\}\\)\\'" id)
+      (match-string 1 id)
+    (secure-hash 'sha256 id)))
+
 (defun emacs-agent-store--file (id)
   "Return the new-namespace snapshot path for conversation ID, without IO."
-  (expand-file-name (concat "conversations/" (secure-hash 'sha256 id) ".eld")
+  (expand-file-name (concat "conversations/" (emacs-agent-store-id-handle id) ".eld")
                     emacs-agent-data-directory))
 
 (defun emacs-agent-store--selection-file (root)

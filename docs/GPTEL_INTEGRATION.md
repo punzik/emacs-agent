@@ -722,6 +722,25 @@ cwd/relative executables, output isolation, remote mocks without connections,
 validation-before-launch, source preservation, F3 artifacts and the
 texts channel. No provider or user-Emacs calls.
 
+## Session information (ADR-0020)
+
+`emacs-agent-session-info` returns a descriptive plist (object or ID string;
+nil resolves the journal owner or scope selection) and the interactive
+`emacs-agent-session-info-show` renders it read-only. `emacs-agent-usage-session-summary`
+sums durable per-HTTP usage journal events per session with the same strict
+semantics as run summaries; the in-flight request is absent until it ends and
+unknown stays unknown. Short IDs (`:id-short`, journal/session names and the
+picker) are prefixes of the canonical `session-<64hex>` ID's own hex part via
+`emacs-agent-session-id-handle`, and snapshot files are named
+`conversations/<same hex>.eld` via `emacs-agent-store-id-handle`; identity
+remains the full ID and restore still enumerates by content, so files saved
+under the previous sha256 names keep loading. No new tool, persistence
+schema change or run side effects.
+
+386 ERT and strict compilation include field/provenance/compaction projection,
+strict and empty usage sums, resolution/error paths, read-only buffer owner
+binding, scope fallback and no-run guarantees. No provider or user-Emacs calls.
+
 ## Post-MVP F4: pigo-style compaction
 
 `emacs-agent-compaction.el` contains provider-independent config, estimates,

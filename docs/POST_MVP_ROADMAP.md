@@ -2,7 +2,7 @@
 
 **Статус:** F0, F0b, F0c, ограниченный F1, lifecycle/UI F2, минимальный F3, F4, F6 и минимальный F8 реализованы; F5 отложен; F7 исключён;
 инструментированные live F2/F4 smoke ещё отдельно. Устранён измеренный секундный pretty-print
-autosave stall. 379 offline ERT и byte compilation с
+autosave stall. 385 offline ERT и byte compilation с
 warnings-as-errors проходят. Для буферного редактирования F0 есть пользовательский
 live smoke и подтверждение undo; отдельный live smoke F0b ещё не выполнялся.
 Остальные post-MVP этапы не реализованы.
@@ -836,8 +836,25 @@ clone/fork и budget/compaction как data, не исполняясь при ч
 
 Раскрытый journal показывает indexed payloads и сохраняет reader при result update.
 Prompt содержит реальный JSON-пример OLD/NEW с quotes/newline, 5392 символа (<5400).
-379 ERT и strict compile проверяют actual JSON/SSE, native wire, inert restore в
-свежем процессе, clone/fork и budget/compaction. Исправлен UTF-8 read snapshots:
+386 ERT и strict compile проверяют actual JSON/SSE, native wire, inert restore в
+свежем процессе, clone/fork и budget/compaction.
+
+### Информация о сессии (ADR-0020)
+
+Согласовано: `emacs-agent-session-info` — plist для пользователя/Elisp/модели,
+`emacs-agent-session-info-show` — тонкая read-only презентация. Scope с
+fallback на project-root, honest токены из durable usage-событий через
+`emacs-agent-usage-session-summary` (строгие суммы, unknown не ноль,
+in-flight request не учтён до завершения). Без побочных эффектов: model
+request/архивы/run/save/создание журнала исключены.
+
+### ADR-0021: единый handle для short и имени файла
+
+Канонический ID `session-<64hex>` сам является источником: short — префикс
+его hex-части, файл снапшота — `conversations/<hex>.eld` (раньше имя файла
+было вторым хэшем sha256(ID)). Restore перечисляет по содержимому, старые
+имена продолжают загружаться; migration не выполняется, старые копии можно
+удалить вручную. Identity везде — полный ID. Исправлен UTF-8 read snapshots:
 NUL не должен включать binary autodetection и искажать Unicode.
 
 ### Синхронный process helper после четвёртого OCaml-диалога

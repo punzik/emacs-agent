@@ -40,6 +40,27 @@ input is expenditure over requests, not a measurement of context size."
                   :tokens tokens)
             (emacs-agent-usage--derived tokens))))
 
+(defun emacs-agent-usage-session-summary (session)
+  "Return strict per-field totals for SESSION's durable usage events.
+Each completed HTTP request of any run records one journal event; the
+current in-flight request is absent until it ends.  Like
+`emacs-agent-usage-summary', sums are gptel-normalized expenditure over
+requests, not a measurement of context size, and unknown stays unknown."
+  (let* ((records (mapcar (lambda (event) (plist-get event :payload))
+                          (cl-remove-if-not
+                           (lambda (event) (eq (plist-get event :type) 'usage))
+                           (emacs-agent-session-events session))))
+         (tokens (cl-loop for key in '(:input :output :cached)
+                          append (list key (emacs-agent-usage--sum
+                                            (mapcar (lambda (record)
+                                                      (plist-get (plist-get record :tokens) key))
+                                                    records))))))
+    (append (list :source 'gptel-normalized :requests (length records)
+                  :reported (cl-count-if (lambda (record) (plist-get record :available))
+                                         records)
+                  :tokens tokens)
+            (emacs-agent-usage--derived tokens))))
+
 (defun emacs-agent-usage-begin (run)
   "Open one HTTP request for RUN, called before the private WAIT handler."
   ;; Unexpected replacement of an unfinished request must not lose its cost.

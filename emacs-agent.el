@@ -16,6 +16,7 @@
 (require 'emacs-agent-store)
 (require 'emacs-agent-input)
 (require 'emacs-agent-status)
+(require 'emacs-agent-usage)
 (require 'tabulated-list)
 
 (declare-function emacs-agent-input-forget "emacs-agent-input" (input))
@@ -358,8 +359,7 @@ Use stable ID ordering for ties, extending the short hash if prefixes collide."
                     (if (= a-time b-time)
                         (string-lessp (emacs-agent-session-id a) (emacs-agent-session-id b))
                       (> a-time b-time))))))
-    (let ((hashes (mapcar (lambda (session) (secure-hash 'sha256 (emacs-agent-session-id session)))
-                          sessions))
+    (let ((hashes (mapcar #'emacs-agent-session-id-handle sessions))
           (size 10))
       (while (/= (length hashes)
                   (length (delete-dups (mapcar (lambda (hash) (substring hash 0 size)) hashes))))
@@ -541,6 +541,166 @@ No selection, model request, artifact read or legacy snapshot import occurs."
       (emacs-agent-session-list--entries)
       (tabulated-list-print t))
     (display-buffer buffer)))
+
+;;;###autoload
+(defun emacs-agent-session-info (&optional session)
+  "Return a plist describing SESSION, or the current conversation.
+SESSION can be a registered conversation object or its ID string; nil
+resolves the journal owner or this scope's selected conversation and
+signals when none exists.  Only live session state is read: no model
+request, archive load, run, save or journal creation occurs.
+
+keys: :name, :id, :id-short (10 hex characters), :scope (canonical
+project root or `global'), :created-at/:updated-at (float
+seconds), :run-status (`idle' without an active run), :pending-runs,
+:pending-inputs (undelivered inputs), :source-buffer and
+:source-buffer-alive (last live working buffer), :messages/:events
+(canonical history and journal lengths), :compaction (:cut
+:summary-length :tokens-before :model :backend :time) or nil,
+:compaction-job-state while a runtime job object exists, :provenance
+and :usage-anchor plists unchanged, :usage strict totals over durable
+per-HTTP journal records sharing `emacs-agent-usage-summary' semantics
+(expenditure over requests, not context size; in-flight request absent
+until it ends; unknown stays unknown), :saved-file, :saved, and
+:log-buffer-alive.  This is descriptive metadata: it certifies no
+edit, save or check."
+  (let* ((session (cond ((null session) (emacs-agent--current-session))
+                         ((emacs-agent-session-p session) session)
+                         ((stringp session)
+                          (or (gethash session emacs-agent-session--registry)
+                              (error "No registered conversation %S" session)))
+                         (t (error "SESSION must be a conversation object or ID string"))))
+         (active (emacs-agent-session-active-run session))
+         (compaction (emacs-agent-session-compaction session))
+         (job (emacs-agent-session-compaction-job session))
+         (source (emacs-agent-session-last-source-buffer session))
+         (alive (buffer-live-p source))
+         (file (emacs-agent-store--file (emacs-agent-session-id session))))
+    (list :name (emacs-agent--session-name session)
+          :id (emacs-agent-session-id session)
+          :id-short (substring (emacs-agent-session-id-handle session) 0 10)
+          :scope (or (emacs-agent-session-key session)
+                      (emacs-agent-session-project-root session) 'global)
+          :created-at (emacs-agent-session-created-at session)
+          :updated-at (emacs-agent-session-updated-at session)
+          :run-status (if active (emacs-agent-run-status active) 'idle)
+          :pending-runs (length (emacs-agent-session-pending-runs session))
+          :pending-inputs (length (emacs-agent-session-inputs session))
+          :source-buffer (when alive (buffer-name source))
+          :source-buffer-alive alive
+          :messages (length (emacs-agent-session-messages session))
+          :events (length (emacs-agent-session-events session))
+          :compaction (when compaction
+                        (list :cut (plist-get compaction :cut)
+                              :summary-length (length (plist-get compaction :summary))
+                              :tokens-before (plist-get compaction :tokens-before)
+                              :model (plist-get compaction :model)
+                              :backend (plist-get compaction :backend)
+                              :time (plist-get compaction :time)))
+          :compaction-job-state (when job (emacs-agent-compact-job-state job))
+          :provenance (emacs-agent-session-provenance session)
+          :usage-anchor (emacs-agent-session-usage-anchor session)
+          :usage (emacs-agent-usage-session-summary session)
+          :saved-file file
+          :saved (file-exists-p file)
+          :log-buffer-alive (buffer-live-p (emacs-agent-session-log-buffer session)))))
+
+(defun emacs-agent-session-info--time (seconds)
+  "Format SECONDS, leaving non-numbers explicitly unknown."
+  (if (numberp seconds)
+      (format-time-string "%Y-%m-%d %H:%M:%S" (seconds-to-time seconds))
+    "unknown"))
+
+(defun emacs-agent-session-info--format (info)
+  "Format an `emacs-agent-session-info' plist INFO as plain text lines."
+  (let* ((usage (plist-get info :usage))
+         (tokens (plist-get usage :tokens))
+         (compaction (plist-get info :compaction))
+         (anchor (plist-get info :usage-anchor))
+         (provenance (plist-get info :provenance))
+         (boundary (plist-get provenance :boundary)))
+    (concat
+     (format "Session: %s\n" (plist-get info :name))
+     (format "ID: %s (short: %s)\n" (plist-get info :id) (plist-get info :id-short))
+     (format "Scope: %s\n" (plist-get info :scope))
+     (format "Created: %s\n" (emacs-agent-session-info--time (plist-get info :created-at)))
+     (format "Updated: %s\n" (emacs-agent-session-info--time (plist-get info :updated-at)))
+     "\nState:\n"
+     (format "  Active run: %s\n" (plist-get info :run-status))
+     (format "  Pending runs: %s\n" (plist-get info :pending-runs))
+     (format "  Undelivered inputs: %s\n" (plist-get info :pending-inputs))
+     (format "  Last source buffer: %s\n"
+             (if (plist-get info :source-buffer-alive)
+                 (format "%s (live)" (or (plist-get info :source-buffer) "unnamed"))
+               (if (plist-get info :source-buffer) "dead" "none recorded")))
+     "\nHistory:\n"
+     (format "  Canonical messages: %s\n" (plist-get info :messages))
+     (format "  Journal events: %s\n" (plist-get info :events))
+     (format "  Compaction: %s\n"
+             (if compaction
+                 (format "cut at message %s, summary %s chars, tokens-before %s, model %s, backend %s (%s)"
+                         (plist-get compaction :cut)
+                         (plist-get compaction :summary-length)
+                         (or (plist-get compaction :tokens-before) 'unknown)
+                         (plist-get compaction :model)
+                         (plist-get compaction :backend)
+                         (emacs-agent-session-info--time (plist-get compaction :time)))
+               "none"))
+     (when (plist-get info :compaction-job-state)
+       (format "  Compaction job: %s\n" (plist-get info :compaction-job-state)))
+     (when provenance
+       (format "  Fork provenance: from %s%s (%s)\n"
+               (plist-get provenance :source-id)
+               (if boundary
+                   (format ", boundary %s at %s" (plist-get boundary :kind)
+                           (plist-get boundary :end))
+                 "")
+               (emacs-agent-session-info--time (plist-get provenance :time))))
+     "\n"
+     (format "Usage anchor: %s\n"
+             (if anchor
+                 (format "model %s, backend %s"
+                         (plist-get anchor :model) (plist-get anchor :backend))
+               "none (invalidated or not set)"))
+     "Usage (gptel-normalized; expenditure over requests, not context size):\n"
+     (format "  HTTP requests: %s (%s with usage data)\n"
+             (plist-get usage :requests) (plist-get usage :reported))
+     (format "  Input (uncached): %s\n" (or (plist-get tokens :input) 'unknown))
+     (format "  Cache read: %s\n" (or (plist-get tokens :cached) 'unknown))
+     (format "  Output: %s\n" (or (plist-get tokens :output) 'unknown))
+     (format "  Input total: %s\n" (or (plist-get usage :input-total) 'unknown))
+     (format "  Total: %s\n" (or (plist-get usage :total) 'unknown))
+     "\nPersistence:\n"
+     (format "  Saved file: %s (%s)\n"
+             (plist-get info :saved-file)
+             (if (plist-get info :saved) "saved" "not saved yet"))
+     (format "  Journal buffer: %s\n"
+             (if (plist-get info :log-buffer-alive) "open" "not open")))))
+
+;;;###autoload
+(defun emacs-agent-session-info-show ()
+  "Show current conversation information in a read-only buffer.
+Resolves the journal owner or this scope's selected conversation; no
+selection changes and no model request, archive load, run, save or
+journal creation occurs.  The buffer follows the instructions-view
+pattern: special mode, owning session bound, project-root default
+directory."
+  (interactive)
+  (let* ((session (emacs-agent--current-session))
+         (buffer (get-buffer-create
+                  (format "*emacs-agent-info: %s*" (emacs-agent--session-name session)))))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert (emacs-agent-session-info--format (emacs-agent-session-info session)))
+        (goto-char (point-min)))
+      (special-mode)
+      (setq-local emacs-agent-session--owner session)
+      (setq-local default-directory (or (emacs-agent-session-project-root session)
+                                        default-directory))
+      (set-buffer-modified-p nil))
+    (display-buffer buffer)
+    buffer))
 
 (defvar emacs-agent-pending-mode-map
   (let ((map (make-sparse-keymap)))

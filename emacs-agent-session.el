@@ -16,6 +16,7 @@
 (autoload 'emacs-agent-store--file "emacs-agent-store")
 (autoload 'emacs-agent-store--data "emacs-agent-store")
 (declare-function emacs-agent-input-state "emacs-agent-input" (input))
+(declare-function emacs-agent-store-id-handle "emacs-agent-store" (id))
 (defvar emacs-agent-store--last-save)
 
 (cl-defstruct emacs-agent-session
@@ -55,6 +56,15 @@ resolution.  If local truename resolution fails, keep the expanded root."
   "Return ROOT's selected registered object, without creation or IO."
   (gethash (gethash (or root 'global) emacs-agent-session--selected)
            emacs-agent-session--registry))
+
+(defun emacs-agent-session-id-handle (session)
+  "Return SESSION's 64-hex display and file-name handle.
+Delegates to `emacs-agent-store-id-handle': canonical IDs are \"session-\"
+plus one 64-hex hash, so the handle visibly matches the full ID, its short
+prefixes and the saved file name. Non-canonical IDs fall back to sha256
+of the ID. Handles are display/storage naming only; identity remains the
+full conversation ID."
+  (emacs-agent-store-id-handle (emacs-agent-session-id session)))
 
 (defun emacs-agent-session-registered-p (session)
   "Whether SESSION is the registered object for its conversation ID."

@@ -172,7 +172,7 @@ Closing the buffer does not cancel the run."
                   "global")))
     (format "%s/%s#%s" scope (if (string-empty-p (or (emacs-agent-session-name session) ""))
                                      "conversation" (emacs-agent-session-name session))
-            (substring (secure-hash 'sha256 (emacs-agent-session-id session)) 0 10))))
+            (substring (emacs-agent-session-id-handle session) 0 10))))
 
 (defun emacs-agent--log-buffer (session)
   "Return SESSION's live journal buffer, creating it if needed."

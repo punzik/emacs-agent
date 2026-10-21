@@ -597,11 +597,26 @@ Multiple independent conversations share each project/global scope:
   short ID plus the original first user request, normalized to one line and clipped
   to minibuffer width. Empty conversations show their name or `(empty)`. Prefix
   collisions extend the short ID; full IDs remain accepted programmatically.
+  The short ID is the prefix of the conversation's own canonical
+  `session-<64hex>` ID, and the saved snapshot file is
+  `conversations/<same 64 hex>.eld`, so labels and on-disk names visibly
+  match (see [ADR-0021](docs/adr/0021-id-handle-file-name.md)).
   Completion preserves activity order and does not save prompt previews in global
   minibuffer history.
 - `M-x emacs-agent-session-search`: regexp search over local names/history/summary/events
   across scopes, without a model, external artifact reads or an index.
 - `M-x emacs-agent-session-clone`: select an independent copy; `C-u` asks for a name.
+- `M-x emacs-agent-session-info-show`: read-only summary of the current
+  conversation: name/IDs/scope, created/updated, active run and pending
+  counts, source buffer liveness, history/compaction/provenance, usage anchor
+  and strict per-HTTP token totals, saved-file state. The underlying
+  `emacs-agent-session-info` (also callable from Elisp/`eval_elisp` with an
+  object or ID) returns the same data as a plist without side effects:
+  no model request, archive load, run, save or journal creation. Token totals
+  come from durable usage records and follow the usage accounting semantics
+  (gptel-normalized expenditure over requests, unknown stays unknown, the
+  in-flight request is not counted until it ends). See
+  [ADR-0020](docs/adr/0020-session-info.md).
 
 Journal labels include name, scope and a short conversation ID. In
 `emacs-agent-session-list`, `Current` marks the in-process scope selection.
@@ -749,7 +764,7 @@ normal minibuffer hooks/keymaps; the agent does not supply a custom editor.
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 379 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 386 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh
