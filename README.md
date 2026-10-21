@@ -505,7 +505,13 @@ Multiple independent conversations share each project/global scope:
 - `M-x emacs-agent-session-new`: save the previous conversation and select an empty one;
   `C-u` asks for an optional name.
 - `M-x emacs-agent-session-rename`: save a name; empty clears it. Names need not be unique.
-- `M-x emacs-agent-session-select`: choose a conversation **in the current scope**.
+- `M-x emacs-agent-session-select`: choose a conversation **in the current scope**,
+  most recently active first. Entries look like `global#efb8d79950: first request…`:
+  short ID plus the original first user request, normalized to one line and clipped
+  to minibuffer width. Empty conversations show their name or `(empty)`. Prefix
+  collisions extend the short ID; full IDs remain accepted programmatically.
+  Completion preserves activity order and does not save prompt previews in global
+  minibuffer history.
 - `M-x emacs-agent-session-search`: regexp search over local names/history/summary/events
   across scopes, without a model, external artifact reads or an index.
 - `M-x emacs-agent-session-clone`: select an independent copy; `C-u` asks for a name.
@@ -656,7 +662,7 @@ normal minibuffer hooks/keymaps; the agent does not supply a custom editor.
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 306 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 310 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh

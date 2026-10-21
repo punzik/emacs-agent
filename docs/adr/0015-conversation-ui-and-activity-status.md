@@ -59,7 +59,7 @@ errors are isolated. Body/usage deltas do not scan the conversation registry;
 unchanged state does not request global redisplay. Short journal names use
 Emacs's duplicate-name suffixes; selector IDs are unchanged.
 
-306 ERT plus warnings-as-errors compilation and diff-check pass. Coverage includes
+310 ERT plus warnings-as-errors compilation and diff-check pass. Coverage includes
 real keyboard bindings and cursor movement, RET/button activation, preview/body
 fold points, folded streaming, diagnostic rebuild/window anchors, paired/orphan
 calls, reader position on result arrival, capture notices, resource warnings,
@@ -92,3 +92,23 @@ No timers/watchers or per-token formatting are added. Empty prefix suppresses
 the colon; missing labels fall back to native state names. Three added regressions
 cover reasoning face ranges/streaming/details and customizable padded aggregation,
 Unicode/percent labels, fallback and immediate setter refresh.
+
+## Activity-ordered conversation picker
+
+The user requested newest activity first and `scope#short-id: first request…`
+labels for `emacs-agent-session-select`. Sort by persisted/runtime `updated-at`
+descending, with stable ID ordering for ties. Selecting/viewing does not itself
+change this timestamp. First user text comes from the original canonical archive,
+not the latest compaction summary or later steering. Normalize whitespace and
+clip by display width, shortening long scope labels while keeping ID visible.
+An empty conversation falls back to its name or `(empty)`.
+
+Use ten SHA-256 hex characters normally, extending prefixes on collision rather
+than allowing ambiguous label lookup. Object/full-ID arguments, scope checks,
+save-before-selection and minibuffer reentrancy guards stay unchanged. Completion
+metadata preserves display/cycle ordering while retaining existing annotation
+properties. Do not put private prompt previews in global minibuffer/savehist
+history. No new timestamps, snapshot fields or model requests are introduced.
+Four new regressions cover ordering/ties/scope, original compacted-prefix prompts,
+Unicode/control/width handling, collisions and the actual completion/selection
+path including metadata, history suppression and no provider calls.

@@ -2,7 +2,7 @@
 
 **Статус:** F0, F0b, F0c, ограниченный F1, lifecycle/UI F2, минимальный F3, F4, F6 и минимальный F8 реализованы; F5 отложен; F7 исключён;
 инструментированные live F2/F4 smoke ещё отдельно. Устранён измеренный секундный pretty-print
-autosave stall. 306 offline ERT и byte compilation с
+autosave stall. 310 offline ERT и byte compilation с
 warnings-as-errors проходят. Для буферного редактирования F0 есть пользовательский
 live smoke и подтверждение undo; отдельный live smoke F0b ещё не выполнялся.
 Остальные post-MVP этапы не реализованы.
@@ -774,7 +774,11 @@ source не подменяется журналом/случайным буфе�
   Важные ошибки/паузы/instruction warnings и recovery user text остаются видимы.
 - Call/result объединены по run/call ID, preview ограничено; F3 notice не скрывается.
   Раскрытие не перечитывает artifacts и не выполняет Lisp. История модели неизменна.
-- Короткие header/buffer names, IDs остаются в selector. Streaming инкрементальный;
+- Короткие header/buffer names; selector показывает `scope#short-id: first request…`,
+  сортирует по последней активности (новые сверху), обрезает по display width.
+  Исходный первый запрос берётся и после compaction; preview не пишется в глобальную
+  minibuffer history. Completion metadata сохраняет порядок, коллизии ID разрешаются
+  удлинением prefix. Streaming инкрементальный;
   диагностический rebuild явный, сохраняет folds и привязку reader к событию.
 - `emacs-agent-status-mode` показывает waiting/responding/eval/compacting/paused и
   положительную обычную очередь через `global-mode-string`, idle скрыт. Без timer,
@@ -785,7 +789,7 @@ source не подменяется журналом/случайным буфе�
 - Runtime-only state hook не пишет аудит и не влияет на model projection/schema;
   ошибка UI не срывает запрос, отмена перед WAIT не допускает transport launch.
 
-306 ERT, warnings-as-errors compile и diff-check прошли. Независимое review нашло
+310 ERT, warnings-as-errors compile и diff-check прошли. Независимое review нашло
 скачок reader с пустой строки при `D`; separator anchors исправлены и покрыты
 регрессией, других подтверждённых замечаний нет. Live UI smoke пока нет;
 рабочий Emacs не hot-loaded. Решение: [ADR-0015](adr/0015-conversation-ui-and-activity-status.md).

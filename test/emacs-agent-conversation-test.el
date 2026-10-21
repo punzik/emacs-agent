@@ -256,4 +256,88 @@
           (should (equal (nth 6 result) (emacs-agent-session-id old)))
           (should-not (nth 7 result)))))))
 
+(ert-deftest emacs-agent-conversation-choices-use-activity-and-original-first-user ()
+  (emacs-agent-conversation-test--fixture
+    (let* ((old (make-emacs-agent-session
+                 :id "b-old" :key 'global :updated-at 10
+                 :messages '((:role assistant :text "not the title")
+                             (:role user :text "first\n\trequest")
+                             (:role user :text "later request"))
+                 :compaction '(:cut 2 :summary "not the first request")))
+           (new (make-emacs-agent-session :id "a-new" :key 'global :updated-at 20
+                                         :messages '((:role user :text "newest"))))
+           (tie (make-emacs-agent-session :id "z-tie" :key 'global :updated-at 20))
+           (empty (make-emacs-agent-session :id "empty" :key 'global :name "Named empty" :updated-at 0))
+           (other (make-emacs-agent-session :id "other" :key "/tmp/other/" :updated-at 30))
+           (original (copy-tree (emacs-agent-session-messages old))))
+      (dolist (session (list old new tie empty other))
+        (puthash (emacs-agent-session-id session) session emacs-agent-session--registry))
+      (let ((choices (emacs-agent--conversation-choices 'global 80)))
+        (should (equal (mapcar #'cdr choices) (list new tie old empty)))
+        (should (string-match-p "global#[[:xdigit:]]\\{10\\}: first request\\'"
+                                (car (cl-find old choices :key #'cdr))))
+        (should (string-suffix-p "(empty)" (car (cl-find tie choices :key #'cdr))))
+        (should (string-suffix-p "Named empty" (car (cl-find empty choices :key #'cdr)))))
+      (should (equal original (emacs-agent-session-messages old)))
+      (should (= (emacs-agent-session-updated-at old) 10)))))
+
+(ert-deftest emacs-agent-conversation-choice-label-fits-width-and-keeps-id ()
+  (let* ((session (make-emacs-agent-session
+                   :id "wide" :project-root (concat "/tmp/界\n\t" (make-string 40 ?界) "/")
+                   :messages (list (list :role 'user :text
+                                         (concat "Напиши\n\tпростую программу " (make-string 100 ?界))))))
+         (label (emacs-agent--conversation-choice-label session "0123456789" 48)))
+    (should (<= (string-width label) 48))
+    (should (string-match-p "#0123456789: Напиши" label))
+    (should (string-suffix-p "…" label))
+    (should-not (string-match-p "[\n\t\r]" label))))
+
+(ert-deftest emacs-agent-conversation-short-id-prefix-collision-remains-unambiguous ()
+  (emacs-agent-conversation-test--fixture
+    (dolist (id '("one" "two"))
+      (puthash id (make-emacs-agent-session :id id :key 'global :updated-at 10)
+               emacs-agent-session--registry))
+    (cl-letf (((symbol-function 'secure-hash)
+               (lambda (_ value &rest _)
+                 (concat (make-string 10 ?a) (if (equal value "one") "1" "2")
+                         (make-string 53 ?b)))))
+      (let ((choices (emacs-agent--conversation-choices 'global 60)))
+        (should (= (length choices) 2))
+        (should-not (equal (caar choices) (caadr choices)))
+        (dolist (choice choices)
+          (should (string-match-p "global#aaaaaaaaaa[12]: " (car choice))))))))
+
+(ert-deftest emacs-agent-conversation-selector-keeps-mru-completion-order ()
+  (emacs-agent-conversation-test--fixture
+    (with-temp-buffer
+      (let* ((old (emacs-agent-session-get nil))
+             (new (emacs-agent-session--new nil))
+             (completion-extra-properties '(:annotation-function ignore)))
+        (setf (emacs-agent-session-updated-at old) 10
+              (emacs-agent-session-updated-at new) 20
+              (emacs-agent-session-messages old)
+              '((:role user :run-id "seed-old" :text "old first request"))
+              (emacs-agent-session-messages new)
+              (list (list :role 'user :run-id "seed-new"
+                          :text (concat "new first request " (make-string 100 ?x)))))
+        (cl-letf (((symbol-function 'window-body-width) (lambda (&rest _) 70))
+                  ((symbol-function 'completing-read)
+                   (lambda (_ choices _predicate _require-match &optional _initial history &rest _)
+                     (should (eq history t))
+                     (should (equal (mapcar #'cdr choices) (list new old)))
+                     (let ((metadata (completion-metadata "" choices nil)))
+                       (should (eq (completion-metadata-get metadata 'display-sort-function) #'identity))
+                       (should (eq (completion-metadata-get metadata 'cycle-sort-function) #'identity))
+                       (should (eq (completion-metadata-get metadata 'annotation-function) #'ignore)))
+                     (dolist (choice choices)
+                       (should (<= (string-width (car choice)) 56))
+                       (should-not (string-match-p
+                                    (regexp-quote (emacs-agent-session-id (cdr choice)))
+                                    (car choice))))
+                     (should (string-suffix-p "…" (caar choices)))
+                     (caar (last choices)))))
+          (should (eq (emacs-agent-session-select) old)))
+        (should (eq (emacs-agent-session-selected nil) old))
+        (should-not emacs-agent-test--requests)))))
+
 ;;; emacs-agent-conversation-test.el ends here

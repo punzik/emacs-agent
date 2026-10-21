@@ -615,7 +615,15 @@ WAIT observers, and no observer is inserted into steering's claim-to-transport
 transaction. These notifications add no durable events, schema fields or model
 messages. Status loading does not require the provider/private summary FSM.
 
-306 ERT, warnings-as-errors compilation and diff-check pass, including actual
+The session picker is sorted by `updated-at` descending (stable ID tie-break),
+with `scope#short-id: original first user request…` labels sized to the minibuffer.
+Compacted raw prefixes still supply the original request. Empty entries use a
+name/placeholder; colliding short hashes are extended. Completion metadata keeps
+activity order rather than alphabetic/history sorting; prompt-preview labels are
+not saved in global minibuffer history. Core selection/identity and persistence
+are unchanged; displaying choices never updates activity timestamps.
+
+310 ERT, warnings-as-errors compilation and diff-check pass, including actual
 keymap dispatch, fold/preview/reader regressions, diagnostics and canonical-history
 isolation, private snapshot roundtrips, native status transitions, error/cancel
 observers and offline subprocess restore. No provider/live UI smoke or user-Emacs

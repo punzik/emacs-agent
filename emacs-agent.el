@@ -311,31 +311,81 @@ With a prefix argument, ask for optional NAME.  Requires idle conversations."
         (force-mode-line-update)))
     session))
 
+(defun emacs-agent--conversation-choice-label (session short-id width)
+  "Format SESSION's SHORT-ID and first user request within WIDTH columns.
+Keep identity visible even if a very narrow window leaves no preview room."
+  (let* ((root (emacs-agent-session-project-root session))
+         (scope (if root (file-name-nondirectory (directory-file-name root)) "global"))
+         (scope (replace-regexp-in-string "[[:space:][:cntrl:]]+" " "
+                                           (if (string-empty-p scope) "/" scope)))
+         (scope-width (max 1 (min 30 (/ width 3) (- width (length short-id) 4))))
+         (prefix (format "%s#%s: " (truncate-string-to-width scope scope-width nil nil "…") short-id))
+         (first (cl-find 'user (emacs-agent-session-messages session)
+                         :key (lambda (record) (plist-get record :role))))
+         (text (or (plist-get first :text) (emacs-agent-session-name session) "(empty)"))
+         (text (string-trim (replace-regexp-in-string
+                             "[[:space:][:cntrl:]]+" " "
+                             (substring-no-properties (format "%s" text)))))
+         (remaining (max 0 (- width (string-width prefix)))))
+    (concat prefix (if (> remaining 0)
+                       (truncate-string-to-width text remaining nil nil "…") ""))))
+
+(defun emacs-agent--conversation-choices (key width)
+  "Return KEY's completion choices, newest activity first, within WIDTH.
+Use stable ID ordering for ties, extending the short hash if prefixes collide."
+  (let (sessions)
+    (maphash (lambda (_ session)
+               (when (equal key (emacs-agent-session-key session)) (push session sessions)))
+             emacs-agent-session--registry)
+    (setq sessions
+          (sort sessions
+                (lambda (a b)
+                  (let ((a-time (emacs-agent-session-updated-at a))
+                        (b-time (emacs-agent-session-updated-at b)))
+                    (if (= a-time b-time)
+                        (string-lessp (emacs-agent-session-id a) (emacs-agent-session-id b))
+                      (> a-time b-time))))))
+    (let ((hashes (mapcar (lambda (session) (secure-hash 'sha256 (emacs-agent-session-id session)))
+                          sessions))
+          (size 10))
+      (while (/= (length hashes)
+                  (length (delete-dups (mapcar (lambda (hash) (substring hash 0 size)) hashes))))
+        (when (= size 64) (user-error "Cannot distinguish conversation IDs"))
+        (cl-incf size))
+      (cl-mapcar (lambda (session hash)
+                   (cons (emacs-agent--conversation-choice-label session (substring hash 0 size) width)
+                         session))
+                 sessions hashes))))
+
 ;;;###autoload
 (defun emacs-agent-session-select (&optional conversation)
   "Select an idle CONVERSATION in this scope, saving the old choice first.
 CONVERSATION can be a registered object or its ID; interactively use completion.
+Choices show newest activity first, short IDs and first-user-request previews.
 Opening a journal alone does not select it."
   (interactive)
   (let* ((origin (emacs-agent--conversation-origin))
-         (key (or (plist-get origin :root) 'global)) choices)
+         (key (or (plist-get origin :root) 'global)))
     (emacs-agent-store-load-all)
-    (maphash
-     (lambda (_ session)
-       (when (equal key (emacs-agent-session-key session))
-         (push (cons (format "%s [%s]" (emacs-agent--session-name session)
-                             (emacs-agent-session-id session)) session) choices)))
-     emacs-agent-session--registry)
-    (unless choices (user-error "No saved conversations in this scope; use emacs-agent-session-new"))
-    (let ((target (cond ((emacs-agent-session-p conversation) conversation)
-                        ((stringp conversation) (gethash conversation emacs-agent-session--registry))
-                        ((null conversation)
-                         (cdr (assoc (completing-read "Conversation: " choices nil t) choices))))))
-      (unless (and target (equal key (emacs-agent-session-key target)))
-        (user-error "Conversation must belong to this scope"))
-      (emacs-agent--conversation-check origin)
-      (emacs-agent--conversation-show
-       (emacs-agent-session--select target (plist-get origin :session)) (plist-get origin :source)))))
+    (let ((choices (emacs-agent--conversation-choices
+                    key (max 1 (- (window-body-width (minibuffer-window))
+                                  (string-width "Conversation: "))))))
+      (unless choices (user-error "No saved conversations in this scope; use emacs-agent-session-new"))
+      (let ((target (cond ((emacs-agent-session-p conversation) conversation)
+                          ((stringp conversation) (gethash conversation emacs-agent-session--registry))
+                          ((null conversation)
+                           (let ((completion-extra-properties
+                                  (append '(:display-sort-function identity :cycle-sort-function identity)
+                                          completion-extra-properties)))
+                             ;; Labels may include private prompt text; do not save
+                             ;; them in the global minibuffer/savehist history.
+                             (cdr (assoc (completing-read "Conversation: " choices nil t nil t)
+                                         choices)))))))
+        (unless (and target (equal key (emacs-agent-session-key target)))
+          (user-error "Conversation must belong to this scope"))
+        (emacs-agent--conversation-check origin)
+        (emacs-agent--conversation-show
+         (emacs-agent-session--select target (plist-get origin :session)) (plist-get origin :source))))))
 
 ;;;###autoload
 (defun emacs-agent-session-clone (&optional name)
