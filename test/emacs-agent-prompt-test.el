@@ -259,8 +259,16 @@
                   "Full output uses memory until forget"))
     (should (string-match-p (regexp-quote rule) emacs-agent-system-prompt))))
 
+(ert-deftest emacs-agent-prompt-sexp-helpers-are-loaded-and-advertised ()
+  (dolist (helper '(emacs-agent-check-sexps emacs-agent-inspect-sexps emacs-agent-replace-sexp))
+    (should (fboundp helper))
+    (should (string-match-p (symbol-name helper) emacs-agent-system-prompt)))
+  (dolist (rule '(":repair t" "invalid post-hook results roll back"
+                  "Narrowed scopes are standalone fragments" "Never bypass refusals"))
+    (should (string-match-p (regexp-quote rule) emacs-agent-system-prompt))))
+
 (ert-deftest emacs-agent-prompt-examples-replace-not-inflate-old-instructions ()
-  ;; ADR-0022 adds a short async-job recipe; not an estimate of token usage.
-  (should (< (length emacs-agent-system-prompt) 5900)))
+  ;; ADR-0025 adds reader diagnostics/structural edits; not a token estimate.
+  (should (< (length emacs-agent-system-prompt) 6900)))
 
 ;;; emacs-agent-prompt-test.el ends here

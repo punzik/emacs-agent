@@ -12,6 +12,7 @@
 (require 'emacs-agent-session)
 (require 'emacs-agent-context)
 (require 'emacs-agent-helpers)
+(require 'emacs-agent-sexps)
 (require 'emacs-agent-jobs)
 (require 'emacs-agent-log)
 (require 'emacs-agent-store)
@@ -55,6 +56,10 @@ Editing
 Optional texts is a JSON string array, bound as fresh list emacs-agent-texts for this call (nil if omitted). Use nth for OLD/NEW or any function's text inputs, not Lisp quoting/placeholders. Payloads are data: no evaluation, unescaping or saving; guards unchanged.
 Prefer one emacs-agent-replace-texts batch with a fresh read's tick: nonempty OLD unique in original accessible text, nonoverlapping ranges, bottom-up atomic undo. Empty NEW deletes; insertion retains unique OLD in NEW. emacs-agent-replace-region uses explicit coordinates. On mismatch/stale tick reread/recompute, never bypass rejection. Preserve user edits/undo/read-only.
 Helpers do NOT save. save-buffer saves ALL changes; failure leaves edits. Never fake saves with set-buffer-modified-p nil/write-region or synchronize via shell writes/revert-buffer. find-file-noselect respects visit conflicts.
+
+Emacs Lisp structure
+Use (emacs-agent-check-sexps BUFFER) for reader diagnostics, not manual bracket counting. (emacs-agent-inspect-sexps BUFFER :depth 1 :limit 32) returns JSON source ranges/parts, including broken tails. Both accept :start/:end, :tick, :widen. Inspect small scopes; depth 0..8, limit 1..1000; expandable nodes can be explored by range. Truncation is explicit.
+Prefer (emacs-agent-replace-sexp BUFFER START END OLD NEW :tick TICK) for Lisp: one whole form to one form (or empty NEW to delete). :repair t allows arbitrary broken ranges/NEW, but all accessible text must read successfully afterward. Invalid candidates fail before edits; invalid post-hook results roll back. Narrowed scopes are standalone fragments, not whole-file checks. No evaluation or automatic save; syntax validity is not semantic correctness. Never bypass refusals.
 
 Verification
 Edit -> explicitly save when intended -> check -> reread changed ranges after LAST check. Disk commands miss unsaved edits; never auto-save/discard user edits for checks. Report edited/saved/checked separately. Require integer exit 0, not empty output, before success claims.

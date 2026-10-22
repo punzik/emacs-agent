@@ -571,6 +571,61 @@ can still bypass them. Undo is subject to normal Emacs size limits and buffer
 lifetime, not persisted across restarts. See
 [ADR-0002](docs/adr/0002-buffer-native-editing.md).
 
+### Emacs Lisp structure and balanced editing
+
+Loading `emacs-agent` also loads `emacs-agent-sexps.el`. No paredit dependency
+or new model tool is needed. Through `eval_elisp`:
+
+```elisp
+(emacs-agent-check-sexps "example.el")
+(emacs-agent-inspect-sexps "example.el" :depth 2 :limit 32)
+(emacs-agent-replace-sexp "example.el" START END OLD NEW :tick TICK)
+```
+
+`check-sexps` returns a plist with `:ok`, `:forms-read`, and the first
+`:diagnostic`: absolute character `:position`, `:form-start`,
+`:reader-position`, 1-based `:line`, 0-based display `:column`, and bounded
+literal `:context`. EOF positions are syntax hints, not certain fixes.
+The Emacs Lisp reader checks matching delimiter types, strings, character
+literals and other reader syntax; forms are **not evaluated**. Reading uses
+an isolated symbol table, so source symbols are not globally interned and
+`#s(hash-table ...)` cannot invoke user-defined hash tests. Such records are
+read generically, without native constructor-specific checks.
+
+`inspect-sexps` returns a JSON string with `nodes` containing source ranges,
+`kind`, `complete`, bounded `preview`, `expandable` and requested `children`.
+It retains readable children of an incomplete form. Lists, vectors and quote
+prefixes expand; other reader constructs remain opaque leaves. Dotted-pair
+dots are syntax parts, not replaceable expressions. `:depth` (0..8, default 1)
+and `:limit` (1..1000 total nodes, default 64) bound output. `truncated` and
+`children-truncated` expose omissions; `next-position` resumes omitted
+**top-level** forms only. Explore a nested node by its explicit range and
+fresh tick. If JSON exceeds the evaluator budget, request fewer nodes/lower
+depth: it errors rather than emitting invalid partial JSON.
+
+Both readers accept optional `:start`, `:end`, `:tick`, `:widen`; default
+scope is the accessible buffer. A range is checked as a standalone fragment.
+Coordinates remain absolute even when narrowed. Live text/editor state is
+preserved; metadata includes buffer, tick and checked bounds.
+
+`replace-sexp` requires exact OLD, fresh integer TICK and a whole form's
+START..END from inspection. Nested forms are supported. NEW must be exactly
+one form without surrounding whitespace/comments, or empty to delete.
+The surrounding accessible buffer must remain valid too: deleting a dotted
+pair's tail, for example, is rejected even though NEW is empty.
+
+For an already broken buffer, use `:repair t`: START..END may be any nonempty
+range and NEW may contain arbitrary text/multiple forms. The **entire
+accessible buffer** must read successfully afterward, not only NEW. To insert
+a missing delimiter, include neighboring OLD text in the repair range.
+Narrowing explicitly limits this guarantee to a standalone fragment;
+`:widen t` checks the full buffer. Source-copy preflight rejects invalid
+candidates before editing; post-hook validation and the edit share one atomic
+rollback group. Existing OLD/tick/read-only/undo/disk-conflict guards remain.
+No automatic save; unrestricted eval can still bypass these helpers.
+Reader syntax validity is not proof of correct program behavior.
+See [ADR-0025](docs/adr/0025-sexp-helpers.md).
+
 ### Checking edited code
 
 Use **edit → explicitly save when intended → check → reread changed ranges after
