@@ -220,6 +220,22 @@ the saved cut and explicit current-run snapshots still apply."
          (_ (error "Unsupported agent history record"))))
      (nthcdr cut original)))))
 
+(cl-defun emacs-agent-gptel--replay-history
+    (run &optional (policy (emacs-agent-run-context-policy run)) omit-summary)
+  "Build RUN's history with separators for gptel's buffer serializer.
+Pinned gptel inserts adjacent prompts without a boundary.  Keep the canonical
+records and the per-input history used for live steering unchanged, but frame
+adjacent prompts with blank lines when replaying or estimating the wire data."
+  (let (previous-prompt)
+    (mapcar (lambda (entry)
+              (let* ((prompt (eq (car entry) 'prompt))
+                     (result (if (and prompt previous-prompt)
+                                 (list 'prompt (concat "\n\n" (cadr entry)))
+                               entry)))
+                (setq previous-prompt prompt)
+                result))
+            (emacs-agent-gptel--history run policy omit-summary))))
+
 (defun emacs-agent-gptel--tool-entries (calls info)
   "Pair pending CALLS with provider IDs from INFO.
 Pinned gptel pushes callback tuples in reverse order.  :tool-use and its :id
@@ -624,7 +640,7 @@ Slot access and state names are isolated pinned-gptel contracts."
                                             :description "Literal text strings, bound as list emacs-agent-texts for this call. No Lisp quoting, unescaping or evaluation.")))))
                 (let ((fsm (emacs-agent-gptel--make-fsm run)))
                   (setf (emacs-agent-run-request-handle run) fsm)
-                  (gptel-request (emacs-agent-gptel--history run)
+                  (gptel-request (emacs-agent-gptel--replay-history run)
                     :buffer (current-buffer) :stream (emacs-agent-run-stream run)
                     :system (emacs-agent-resources-system emacs-agent-system-prompt
                                                           (emacs-agent-run-instructions run))

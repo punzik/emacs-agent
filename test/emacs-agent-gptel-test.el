@@ -82,6 +82,62 @@ Mock only the gptel dispatch callback tuples, including their reversed order."
   (emacs-agent-gptel--callback run text nil)
   (gptel--fsm-transition (emacs-agent-run-request-handle run) 'DONE))
 
+(ert-deftest emacs-agent-adapter-replay-separates-adjacent-user-inputs ()
+  (emacs-agent-test-adapter
+    (with-temp-buffer
+      (let* ((emacs-agent-context-history nil)
+             (run (emacs-agent-test--submit "first"))
+             (session (emacs-agent-run-session run)))
+        ;; Durable records after two inputs delivered at the same tool boundary.
+        (setf (emacs-agent-session-messages session)
+              (append (emacs-agent-session-messages session)
+                      (list (list :role 'user :run-id (emacs-agent-run-id run)
+                                  :input-id "steer-one" :text "Use file A")
+                            (list :role 'user :run-id (emacs-agent-run-id run)
+                                  :input-id "steer-two" :text "NOT file B"))))
+        (emacs-agent-test--complete run "done")
+        (let* ((next (emacs-agent-test--submit "next"))
+               (request (car emacs-agent-test--requests))
+               (fsm (with-current-buffer (plist-get request :buffer)
+                      (funcall emacs-agent-test--real-request
+                               (plist-get request :prompt) :dry-run t :stream nil)))
+               (expected "first\n\nUse file A\n\nNOT file B"))
+          (should (equal (plist-get (seq-find
+                                    (lambda (message) (equal (plist-get message :role) "user"))
+                                    (plist-get (plist-get (gptel-fsm-info fsm) :data) :messages))
+                                   :content)
+                         expected))
+          (should (equal (plist-get (aref (plist-get (emacs-agent-compact--wire next) :messages) 0)
+                                   :content)
+                         expected))
+          ;; Live steering still gets one unmodified prompt per input.
+          (should (equal (cl-subseq (emacs-agent-gptel--history next) 0 3)
+                         '((prompt "first") (prompt "Use file A") (prompt "NOT file B"))))
+          (should (equal (mapcar (lambda (message) (plist-get message :text))
+                                (cl-subseq (emacs-agent-session-messages session) 0 3))
+                         '("first" "Use file A" "NOT file B"))))))))
+
+(ert-deftest emacs-agent-adapter-replay-separates-cancelled-ask-and-summary ()
+  (emacs-agent-test-adapter
+    (with-temp-buffer
+      (let* ((emacs-agent-context-history nil)
+             (run (emacs-agent-test--submit "cancelled ask"))
+             (session (emacs-agent-run-session run)))
+        (emacs-agent-gptel-cancel session)
+        (let ((next (emacs-agent-test--submit "new ask")))
+          (should (equal (plist-get (aref (plist-get (emacs-agent-compact--wire next) :messages) 0)
+                                   :content)
+                         "cancelled ask\n\nnew ask"))
+          (setf (emacs-agent-session-compaction session)
+                '(:cut 1 :summary "old summary"))
+          (should (string-suffix-p
+                   "</summary>\n\nnew ask"
+                   (plist-get (aref (plist-get (emacs-agent-compact--wire next) :messages) 0)
+                              :content)))
+          (should (equal (plist-get (aref (plist-get (emacs-agent-compact--wire next nil t) :messages) 0)
+                                   :content)
+                         "new ask")))))))
+
 (ert-deftest emacs-agent-adapter-fifo-and-independent-sessions ()
   (emacs-agent-test-adapter
     (with-temp-buffer

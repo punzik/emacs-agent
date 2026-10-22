@@ -11,6 +11,7 @@
 (require 'emacs-agent-usage)
 
 (declare-function emacs-agent-gptel--history "emacs-agent-gptel" (run &optional policy omit-summary))
+(declare-function emacs-agent-gptel--replay-history "emacs-agent-gptel" (run &optional policy omit-summary))
 (declare-function emacs-agent-gptel--live-p "emacs-agent-gptel" (run))
 (declare-function emacs-agent-gptel--finish "emacs-agent-gptel" (run status &optional detail))
 (declare-function emacs-agent-gptel--start-next "emacs-agent-gptel" (session))
@@ -60,7 +61,7 @@ OMIT-SUMMARY keeps the cut/snapshots but excludes separately framed old summary.
                        gptel-backend (emacs-agent-run-backend run)
                        gptel-model (emacs-agent-run-model run))
            (gptel--parse-list-and-insert
-            (emacs-agent-gptel--history run (emacs-agent-run-context-policy run) omit-summary))
+            (emacs-agent-gptel--replay-history run (emacs-agent-run-context-policy run) omit-summary))
            (goto-char (point-max))
            (list :model (format "%s" (emacs-agent-run-model run))
                  :messages (vconcat (gptel--parse-buffer (emacs-agent-run-backend run) nil)))))
