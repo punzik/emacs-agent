@@ -958,6 +958,34 @@ captured texts. No extra discovery outside the root or new model tools.
 error cases, frozen FIFO/tool continuation and restore/view without rereading.
 No real-provider or live user-Emacs calls.
 
+## User helper descriptions (ADR-0024)
+
+`emacs-agent-user-helpers.el` registers global descriptive metadata for ordinary
+loaded functions, not model tools. Required `:description`/`:returns`, optional
+`:constraints`/`:example`, and automatic usage/arglist signature render one
+name-sorted compact block. Full docstrings are not sent. Autoloads (also via
+aliases), macros, special forms and undefined functions are rejected. Neither
+functions nor example strings are executed by registration. Inspection uses
+the resolved definition for both documentation and arglist; symbol documentation
+overrides are ignored to avoid their implicit Lisp evaluation. Re-register after
+redefinition; invalid updates preserve the old entry.
+
+`emacs-agent-resources-capture` freezes rendered `:helpers` alongside project
+instructions, independently of root and file opt-out. The system composer uses
+only this snapshot, after the common and EMACSAGENT.md blocks; an empty registry
+preserves prior prompt bytes. No builtin prompt rewrite, additional tool, FSM
+hook, provider API or new run slot. Pending validation allows a nonempty string
+only at the top instructions level. Persistence is inert and never recreates
+registry/code. Journal records presence; instructions view shows captured text.
+Existing byte quotas and actual-request context checks include the new text.
+
+FIFO, tool continuation, restored pending audit/view, printed metadata, byte
+quota and actual gptel wire context budget are covered by offline tests.
+421 ERT pass on source and byte-code; strict compilation and diff-check pass.
+Manual compaction's historical `tokens-before` preview remains the existing
+history-only estimate; this change does not broaden that estimate or inject
+helper descriptions into the tool-free summary prompt. No provider/live smoke.
+
 ## Post-MVP F0b: durable streaming blocks (schema 2)
 
 The F0b milestone wrote **schema 2** (F6 now writes schema 3 in a new namespace),

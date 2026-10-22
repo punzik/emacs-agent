@@ -14,6 +14,7 @@
          (emacs-agent-session--selected (make-hash-table :test #'equal))
          (emacs-agent-session--mutation nil)
          (emacs-agent-session--counter 0)
+         (emacs-agent-user-helpers--registry (make-hash-table :test #'eq))
          (emacs-agent-data-directory (make-temp-file "agent-adapter-test-" t))
          (emacs-agent-auto-save nil)
          (emacs-agent-session-event-functions nil)

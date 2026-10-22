@@ -185,6 +185,8 @@
   (emacs-agent-test-adapter
     (emacs-agent-resources-test--project
       (with-temp-buffer
+        (emacs-agent-register-helper 'emacs-agent-buffer-info
+                                    :description "FROZEN-HELPER" :returns "Metadata plist.")
         (emacs-agent-resources-test--write root "AGENTS.md" "FROZEN-RULE")
         (emacs-agent-resources-test--write root "EMACSAGENT.md" "FROZEN-AGENT")
         (let* ((run (emacs-agent-test--submit "use one tool" root))
@@ -205,6 +207,8 @@
            (gptel-fsm-info fsm))
           (emacs-agent-resources-test--write root "AGENTS.md" "CHANGED-RULE")
           (emacs-agent-resources-test--write root "EMACSAGENT.md" "CHANGED-AGENT")
+          (emacs-agent-register-helper 'emacs-agent-buffer-info
+                                      :description "CHANGED-HELPER" :returns "Metadata plist.")
           (let ((gptel-use-curl t) (emacs-agent-project-instructions nil))
             (cl-letf (((symbol-function 'gptel-curl-get-response)
                        (lambda (next-fsm) (setq next-data (copy-tree (plist-get (gptel-fsm-info next-fsm) :data))))))
@@ -215,7 +219,8 @@
             (should (= (length systems) 1))
             (should (equal (plist-get (car systems) :content) system))
             (should (string-match-p "FROZEN-AGENT" system))
-            (should-not (string-match-p "CHANGED-RULE\\|CHANGED-AGENT"
+            (should (string-match-p "FROZEN-HELPER" system))
+            (should-not (string-match-p "CHANGED-RULE\\|CHANGED-AGENT\\|CHANGED-HELPER"
                                         (plist-get (car systems) :content)))))))))
 
 (ert-deftest emacs-agent-resources-warning-visible-after-restore ()

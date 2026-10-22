@@ -171,9 +171,9 @@ blank input and C-g leave the run unchanged."
 
 ;;;###autoload
 (defun emacs-agent-show-instructions ()
-  "Show captured project instructions for the active or last submitted run.
-This is a saved disk snapshot, not a live preview.  No resources are reread.
-The view includes the selected path, status and any loading warnings."
+  "Show captured instructions for the active or last submitted run.
+This is a frozen snapshot, not a live preview; no files or registry are reread.
+The view includes project paths/status/warnings and user helper descriptions."
   (interactive)
   (let* ((session (emacs-agent--current-session))
          (active (emacs-agent-session-active-run session))

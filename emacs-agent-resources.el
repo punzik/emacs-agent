@@ -8,6 +8,7 @@
 ;;; Code:
 (require 'cl-lib)
 (require 'subr-x)
+(require 'emacs-agent-user-helpers)
 
 (defcustom emacs-agent-project-instructions t
   "Whether new submitted inputs capture instructions from the project root.
@@ -48,24 +49,30 @@ Empty or unreadable candidates never fall back.  Read saved data only."
 The common file is selected by `emacs-agent-resources--instruction-names'.
 EMACSAGENT.md is independent: it also works without a common file, and an
 error in one does not suppress the other.  Both respect the source opt-out.
-No Lisp, mode hooks or file-local variables are executed."
+Registered user helper descriptions are captured independently of ROOT and
+project-file opt-out.  No Lisp, mode hooks or file-local variables are executed."
   (let ((snapshot (emacs-agent-resources--capture
                    root emacs-agent-resources--instruction-names)))
     (when (and emacs-agent-project-instructions root)
       (let ((agent (emacs-agent-resources--capture root '("EMACSAGENT.md"))))
         (unless (eq (plist-get agent :status) 'missing)
           (setq snapshot (plist-put snapshot :emacsagent agent)))))
+    (when-let* ((helpers (emacs-agent-user-helpers--capture)))
+      (setq snapshot (plist-put snapshot :helpers helpers)))
     snapshot))
 
 (defun emacs-agent-resources-system (base snapshot)
-  "Append captured common and agent-specific SNAPSHOT to BASE in order.
-No resources are read.  Snapshots from older turns are audit only, never
-replayed as user text.  Each loaded file has its own path heading."
-  (dolist (part (list snapshot (plist-get snapshot :emacsagent)) base)
+  "Append SNAPSHOT's common file, agent-specific file and user helpers to BASE.
+No files or registry are read.  Snapshots from older turns are audit only,
+never replayed as user text.  Each loaded file has its own path heading."
+  (dolist (part (list snapshot (plist-get snapshot :emacsagent)))
     (when (eq (plist-get part :status) 'loaded)
       (setq base (concat base "\n\nProject instructions from "
                          (format "%S" (plist-get part :path)) ":\n"
-                         (plist-get part :text))))))
+                         (plist-get part :text)))))
+  (if-let* ((helpers (plist-get snapshot :helpers)))
+      (concat base "\n\n" helpers)
+    base))
 
 (defun emacs-agent-resources--summary (snapshot label)
   "Render one SNAPSHOT status, path and warnings under LABEL."
@@ -76,10 +83,12 @@ replayed as user text.  Each loaded file has its own path heading."
             (concat "\n" (string-join (plist-get snapshot :warnings) "\n")))))
 
 (defun emacs-agent-resources-summary (snapshot)
-  "Render both captured instruction statuses/paths/warnings, without text."
+  "Render captured file statuses/paths/warnings and helper presence, not text."
   (concat (emacs-agent-resources--summary snapshot "Project instructions")
           (when-let* ((agent (plist-get snapshot :emacsagent)))
-            (concat "\n" (emacs-agent-resources--summary agent "Emacs agent instructions")))))
+            (concat "\n" (emacs-agent-resources--summary agent "Emacs agent instructions")))
+          (when (plist-get snapshot :helpers)
+            "\nUser helpers: captured")))
 
 (provide 'emacs-agent-resources)
 ;;; emacs-agent-resources.el ends here

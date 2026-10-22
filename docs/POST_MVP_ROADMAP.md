@@ -2,7 +2,7 @@
 
 **Статус:** F0, F0b, F0c, ограниченный F1, lifecycle/UI F2, минимальный F3, F4, F6 и минимальный F8 реализованы; F5 отложен; F7 исключён;
 инструментированные live F2/F4 smoke ещё отдельно. Устранён измеренный секундный pretty-print
-autosave stall. 406 offline ERT и byte compilation с
+autosave stall. 421 offline ERT и byte compilation с
 warnings-as-errors проходят. Для буферного редактирования F0 есть пользовательский
 live smoke и подтверждение undo; отдельный live smoke F0b ещё не выполнялся.
 Остальные post-MVP этапы не реализованы.
@@ -887,6 +887,20 @@ user-Emacs smoke не выполнялся. Тесты и verification — в AD
 специфичный. Standalone тоже работает; opt-out отключает оба. Ошибки каждого
 видимы отдельно. Оба текста frozen при submission, сохраняются и показываются
 без перечитывания. 406 ERT и strict compile; live smoke не выполнялся.
+
+### Пользовательские хелперы (ADR-0024)
+
+Согласован и реализован глобальный runtime-реестр:
+`emacs-agent-register-helper FUNCTION :description ... :returns ...`
+с необязательными `:constraints`/`:example` и unregister. Сигнатура берётся
+из loaded function usage/arglist, полный docstring не отправляется. Единый
+компактный блок сортируется по имени и фиксируется при submission независимо
+от project opt-out. Встроенные инструкции не переписаны; новых tools нет.
+Help подробно описывает подготовку metadata; примеры не исполняются.
+FIFO/continuation/restore используют сохранённый текст, не живой registry.
+Код и registry из snapshots не восстанавливаются; unregister не отзывает
+доступ unrestricted eval. 421 ERT и strict compile; provider/live smoke не
+выполнялся. Verification — в ADR-0024.
 
 ## 6. Следующие кандидаты, но не обязательства текущего плана
 

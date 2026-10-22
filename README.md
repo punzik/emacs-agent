@@ -227,6 +227,60 @@ rereading disk. Restored snapshots remain inspectable; nothing resumes itself.
 See [ADR-0005](docs/adr/0005-root-project-instructions.md) and
 [ADR-0023](docs/adr/0023-emacsagent-instructions.md).
 
+### Registering user helpers
+
+Load your ordinary Elisp function, then register its compact description:
+
+```elisp
+(require 'emacs-agent)
+(require 'my-diagnostics) ; your implementation, loaded separately
+(emacs-agent-register-helper
+ 'my-diagnostics
+ :description "Read current buffer diagnostics."
+ :returns "List of (:line :column :severity :message)."
+ :constraints "Requires an active checker; does not save or modify buffers."
+ :example "(my-diagnostics \"main.ml\")")
+;; Stop advertising it to future inputs:
+(emacs-agent-unregister-helper 'my-diagnostics)
+```
+
+`:description` and `:returns` are required nonempty strings. Omit optional
+`:constraints` / `:example` when unnecessary; passing nil is not supported.
+Name/signature are automatic; full docstrings are not sent. The format is:
+
+```text
+User helpers (via eval_elisp):
+(my-diagnostics buffer)
+  Read current buffer diagnostics.
+  Returns: List of (:line :column :severity :message).
+  Constraints: Requires an active checker; does not save or modify buffers.
+  Example: (my-diagnostics "main.ml")
+```
+
+Keep purpose and result shape concise. Describe preconditions, missing/error
+results, important fields, effects on buffers/files, save behavior, coordinate
+units and continuation rules where relevant. Do not repeat the signature or
+shared eval instructions. A short example is optional literal text: registration
+neither parses nor executes it. Prose whitespace is collapsed; inner example
+text is preserved. See `C-h f emacs-agent-register-helper` for the full contract.
+
+The global runtime registry adds one name-sorted block after project instructions,
+including without a project or with project-file opt-out. Re-registering updates
+the entry atomically; do this after redefining the function. Autoloads, undefined
+functions, macros and special forms are rejected: registration never loads code.
+Usage metadata is preferred for `cl-defun` keyword signatures, with argument
+introspection as fallback; unavailable signatures require a Lisp wrapper.
+Only the resolved definition is inspected: symbol `function-documentation`
+overrides are ignored because they can evaluate Lisp.
+
+New inputs freeze their descriptions at submission. FIFO/tool continuations,
+recovery and instructions view use saved text, not the current registry. Text
+counts toward pending-byte and request-context budgets. Snapshots do not restore
+function code or registry entries. Unregister is **not access revocation**;
+`eval_elisp` remains unrestricted and older runs keep their snapshot. These are
+ordinary helpers, not extra model tools. See
+[ADR-0024](docs/adr/0024-user-helper-registration.md).
+
 ### Model I/O efficiency (F0c)
 
 A string final value from `eval_elisp` is printed without text properties.
@@ -239,8 +293,8 @@ Output limits still apply to the useful text.
 
 Read results now use one literal `:text` plus range metadata, without per-line
 plists. Batch exact-text edits and per-HTTP/run usage accounting are implemented.
-The system prompt has executable examples for all
-helpers, field extraction, continuation, read→batch and separate saving. Tests
+The system prompt has executable examples for core reading/editing helpers,
+field extraction, continuation, read→batch and separate saving. Tests
 run the actual examples through the evaluator on disposable visited files;
 local variables do not survive another tool call. F0b optimizes the disk archive,
 not the model's history. Findings and contracts:
@@ -800,7 +854,7 @@ normal minibuffer hooks/keymaps; the agent does not supply a custom editor.
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 406 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 421 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh

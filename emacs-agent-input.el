@@ -53,7 +53,7 @@ Includes text, context and instructions, not backend objects or credentials."
 AGENT-FILE validates the leaf EMACSAGENT.md snapshot, forbidding nesting."
   (emacs-agent-input--fields
    instructions (if agent-file '(:status :root :path :text :warnings)
-                  '(:status :root :path :text :warnings :emacsagent)))
+                  '(:status :root :path :text :warnings :emacsagent :helpers)))
   (unless (and (memq (plist-get instructions :status) '(loaded missing disabled no-project error))
                (or (null (plist-get instructions :root)) (stringp (plist-get instructions :root)))
                (or (null (plist-get instructions :path)) (stringp (plist-get instructions :path)))
@@ -63,6 +63,10 @@ AGENT-FILE validates the leaf EMACSAGENT.md snapshot, forbidding nesting."
                (proper-list-p (plist-get instructions :warnings))
                (cl-every #'stringp (plist-get instructions :warnings)))
     (error "Malformed input instructions"))
+  (when (plist-member instructions :helpers)
+    (unless (and (stringp (plist-get instructions :helpers))
+                 (not (string-empty-p (string-trim (plist-get instructions :helpers)))))
+      (error "Malformed user helper descriptions")))
   (when-let* ((agent (plist-get instructions :emacsagent)))
     (emacs-agent-input--validate-instructions agent t)))
 
