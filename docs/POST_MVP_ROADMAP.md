@@ -2,7 +2,7 @@
 
 **Статус:** F0, F0b, F0c, ограниченный F1, lifecycle/UI F2, минимальный F3, F4, F6 и минимальный F8 реализованы; F5 отложен; F7 исключён;
 инструментированные live F2/F4 smoke ещё отдельно. Устранён измеренный секундный pretty-print
-autosave stall. 385 offline ERT и byte compilation с
+autosave stall. 402 offline ERT и byte compilation с
 warnings-as-errors проходят. Для буферного редактирования F0 есть пользовательский
 live smoke и подтверждение undo; отдельный live smoke F0b ещё не выполнялся.
 Остальные post-MVP этапы не реализованы.
@@ -852,9 +852,9 @@ request/архивы/run/save/создание журнала исключены
 
 Канонический ID `session-<64hex>` сам является источником: short — префикс
 его hex-части, файл снапшота — `conversations/<hex>.eld` (раньше имя файла
-было вторым хэшем sha256(ID)). Restore перечисляет по содержимому, старые
-имена продолжают загружаться; migration не выполняется, старые копии можно
-удалить вручную. Identity везде — полный ID. Исправлен UTF-8 read snapshots:
+было вторым хэшем sha256(ID)). Restore проверяет содержимое и текущее имя
+файла. Старые имена canonical ID не поддерживаются; migration и fallback
+не требуются по решению пользователя. Identity везде — полный ID. Исправлен UTF-8 read snapshots:
 NUL не должен включать binary autodetection и искажать Unicode.
 
 ### Синхронный process helper после четвёртого OCaml-диалога
@@ -869,6 +869,17 @@ lookup executable относительно cwd, без save/retry/интерпр
 Runtime/model benchmark не выполнялся; приватные диалоги не считаются
 контролируемым доказательством улучшения LLM.
 
+### Локальные асинхронные jobs (ADR-0022)
+
+Согласован и реализован минимальный scope: обычные start/status/read/cancel/list/forget
+helpers через `eval_elisp`, локальный `make-process`, literal argv/cwd,
+bounded output с character offsets и ручное управление по runtime ID.
+Нет TRAMP, таймеров, автоматического polling/LLM continuation, save/retry
+или restart recovery. Cancel run не отменяет jobs; остановка потомков не
+гарантируется. Полный output хранится в памяти до forget/restart; bounded
+read не является memory limit. 402 ERT и strict compile проходят; provider/live
+user-Emacs smoke не выполнялся. Тесты и verification — в ADR-0022.
+
 ## 6. Следующие кандидаты, но не обязательства текущего плана
 
 - **Model/thinking selection:** session/run-local настройки, реальные capabilities,
@@ -880,8 +891,8 @@ Runtime/model benchmark не выполнялся; приватные диало
 - **Emacs-native context actions:** явно приложить выделение, buffer range,
   compilation diagnostics или diff. Никакой автоматической отправки полного
   буфера; payload фиксируется при выборе, учитывается в budget.
-- **Асинхронные jobs:** helpers поверх `make-process`, status/result/cancel;
-  управление только своими jobs, не обещание остановить любой процесс агента.
+- **Асинхронные jobs:** минимальный локальный slice согласован (ADR-0022,
+  выше); remote execution, spooling/quotas и notifications пока не входят.
 - **Transient retries:** только после отдельного lifecycle spike и тестов
   отсутствия повторных Lisp effects/двойного retry gptel и агента.
 - **Context edits:** append-only изменения будущей model projection с явным

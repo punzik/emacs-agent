@@ -533,14 +533,46 @@ use PATH lookup; paths with a directory component are expanded against
 the same host. It never saves, edits, retries, cleans generated files or
 interprets success. Launch errors/quit propagate; no status is invented.
 Adapt program/args to the project and require **integer exit 0**, not empty
-output, before success claims. Synchronous; use an existing async workflow for
-long checks. See [ADR-0019](docs/adr/0019-process-helper.md).
+output, before success claims. For long local checks use the async job helpers
+below. See [ADR-0019](docs/adr/0019-process-helper.md).
 
 `emacs-agent-replace-region` names the offending argument (START/END/OLD/NEW/
 :tick) with its actual value instead of a generic requirements list.
 
 EOF read errors now include the requested range and actual whole-buffer line
 count instead of silently clamping END. See [ADR-0017](docs/adr/0017-edit-save-check-workflow.md).
+
+### Local asynchronous jobs
+
+Ordinary helpers through `eval_elisp`, not extra model tools:
+
+```elisp
+(emacs-agent-job-start "make" ["test"] :directory "/path/to/project/") ; → job ID
+;; Substitute the returned string for ID in later calls:
+(emacs-agent-job-status ID)
+(emacs-agent-job-read ID :from 0 :limit 4096)
+(emacs-agent-job-list :from 0 :limit 20)
+(emacs-agent-job-cancel ID)
+(emacs-agent-job-forget ID) ; only after termination
+```
+
+Start returns immediately; literal argv, cwd-relative executables, local only
+(no TRAMP or implicit shell). UTF-8 stdout/stderr share a private output buffer.
+Status reports `running` / `exited` / `signaled` / `failed`, with integer `:exit`
+only for ordinary exit and `:signal` for signal termination. A cancellation
+request is not success, rollback or a guarantee of stopping descendants.
+
+Read returns bounded `:text`; resume with its zero-based character
+`:next-offset`. `:truncated nil` means only the end of output available **now**;
+`:complete t` additionally requires a terminal job. Reads do not wait or consume
+output. List returns a bounded page of `:jobs` metadata, newest first.
+
+No automatic polling, LLM continuation, save, retry, restart recovery or linkage
+to run cancellation. Jobs are shared across the current Emacs, not scoped access
+controls. Full output remains **in memory until forget/restart**; read limits do
+not bound memory usage. Forget removes only the terminal job's runtime record
+and output, not files created by the command. See
+[ADR-0022](docs/adr/0022-async-jobs.md).
 
 ### Replay support boundary
 
@@ -764,7 +796,7 @@ normal minibuffer hooks/keymaps; the agent does not supply a custom editor.
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 386 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 402 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh

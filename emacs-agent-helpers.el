@@ -130,8 +130,8 @@ propagate; no exit status is invented.
 This does not save, edit or select the caller's buffer, infer which
 file was checked, interpret success, retry commands or clean generated
 files.  Process side effects are not rolled back.  The private output
-buffer is always removed.  Use an existing asynchronous workflow for
-long commands."
+buffer is always removed.  For long local commands use
+`emacs-agent-job-start' from the optional `emacs-agent-jobs' module."
   (unless (and (stringp program) (> (length program) 0))
     (error "PROGRAM must be a nonempty string"))
   (unless (and (or (vectorp args) (proper-list-p args)) (cl-every #'stringp args))

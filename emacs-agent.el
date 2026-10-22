@@ -12,6 +12,7 @@
 (require 'emacs-agent-session)
 (require 'emacs-agent-context)
 (require 'emacs-agent-helpers)
+(require 'emacs-agent-jobs)
 (require 'emacs-agent-log)
 (require 'emacs-agent-store)
 (require 'emacs-agent-input)
@@ -59,6 +60,7 @@ Verification
 Edit -> explicitly save when intended -> check -> reread changed ranges after LAST check. Disk commands miss unsaved edits; never auto-save/discard user edits for checks. Report edited/saved/checked separately. Require integer exit 0, not empty output, before success claims.
 Loaded features/commands do not prove active backends or checked code. Read minor-mode variables, not mode commands. Query the configured checker's diagnostics/readiness/freshness, else a project check command; package inventories are not code checks.
 Use emacs-agent-run-process for commands: combined :output, :command argv, :directory, :exit. Bare names use PATH; ./binary is cwd-relative. No implicit save/retry/shell. Find executables with executable-find.
+Long local commands: (emacs-agent-job-start PROGRAM ARGS :directory CWD) returns ID. job-status/read/cancel/forget/list use the emacs-agent- prefix. Read with :from (default 0), :limit, resume :next-offset. :truncated nil is only current EOF; :complete requires terminal state and all output read. No busy-wait, auto-continuation or restart recovery. Cancel run does not cancel jobs. Full output uses memory until forget; no guaranteed descendant kill.
 
 Examples: example.el has old-one, old-two, end. Adapt targets/commands; locals do not persist.
 Metadata tick:

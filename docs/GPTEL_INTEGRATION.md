@@ -722,6 +722,29 @@ cwd/relative executables, output isolation, remote mocks without connections,
 validation-before-launch, source preservation, F3 artifacts and the
 texts channel. No provider or user-Emacs calls.
 
+## Local asynchronous jobs inside eval (ADR-0022)
+
+`emacs-agent-jobs.el` adds ordinary start/status/read/cancel/list/forget helpers,
+loaded with `emacs-agent`; no gptel tool registration or FSM changes. Start uses
+local `make-process`, literal argv, explicit cwd, UTF-8 and a combined pipe.
+Read/list fit the printed eval budget; character offsets allow lossless output
+continuation. Current EOF is not process completion. Status/read never wait.
+
+Job IDs, process objects and output buffers are runtime-only and shared across
+sessions. Agent run cancellation does not cancel jobs; no timers, polling,
+retry, automatic LLM continuation, save or restart recovery. Cancellation uses
+only the owned process object, with no promise about descendants or pending
+output completeness. Full output stays in memory until explicit forget/restart;
+there is no quota, disk spooling or timed cleanup. Source buffers and conversation
+persistence are not changed. The short prompt recipe adds no executable examples;
+the prompt length guard is now <5900 characters (actual 5846), not a token estimate.
+
+402 offline ERT and warnings-as-errors compilation pass. New tests use real
+local processes, handshake/deadline waits, argv/cwd/PATH, stdout/stderr/Unicode,
+budgeted continuation/list pages, cancel/forget, error/quit cleanup, remote
+rejection and source preservation. Actual eval + texts integration and runtime
+ID namespace isolation are covered. No provider or live user-Emacs calls.
+
 ## Session information (ADR-0020)
 
 `emacs-agent-session-info` returns a descriptive plist (object or ID string;
@@ -733,9 +756,9 @@ unknown stays unknown. Short IDs (`:id-short`, journal/session names and the
 picker) are prefixes of the canonical `session-<64hex>` ID's own hex part via
 `emacs-agent-session-id-handle`, and snapshot files are named
 `conversations/<same hex>.eld` via `emacs-agent-store-id-handle`; identity
-remains the full ID and restore still enumerates by content, so files saved
-under the previous sha256 names keep loading. No new tool, persistence
-schema change or run side effects.
+remains the full ID. Restore validates both content and the current filename;
+old sha256 filenames for canonical IDs are unsupported, without migration or
+fallback (ADR-0021). No new tool, persistence schema change or run side effects.
 
 386 ERT and strict compilation include field/provenance/compaction projection,
 strict and empty usage sums, resolution/error paths, read-only buffer owner

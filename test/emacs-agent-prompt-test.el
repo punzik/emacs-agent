@@ -252,8 +252,15 @@
                   "Use emacs-agent-run-process" "./binary is cwd-relative" "executable-find"))
     (should (string-match-p (regexp-quote rule) emacs-agent-system-prompt))))
 
+(ert-deftest emacs-agent-prompt-async-job-contract-is-explicit ()
+  (dolist (rule '("emacs-agent-job-start" "job-status/read/cancel/forget/list"
+                  ":next-offset" ":complete requires terminal state"
+                  "No busy-wait" "Cancel run does not cancel jobs"
+                  "Full output uses memory until forget"))
+    (should (string-match-p (regexp-quote rule) emacs-agent-system-prompt))))
+
 (ert-deftest emacs-agent-prompt-examples-replace-not-inflate-old-instructions ()
-  ;; Recorded pre-rewrite length, not an estimate of token usage.
-  (should (< (length emacs-agent-system-prompt) 5400)))
+  ;; ADR-0022 adds a short async-job recipe; not an estimate of token usage.
+  (should (< (length emacs-agent-system-prompt) 5900)))
 
 ;;; emacs-agent-prompt-test.el ends here
