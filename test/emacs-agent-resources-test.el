@@ -248,6 +248,39 @@
                     (should (string-match-p "Project instructions: error" (buffer-string))))))
             (when (buffer-live-p view) (kill-buffer view))))))))
 
+(ert-deftest emacs-agent-resources-agent-warning-visible-live-and-after-restore ()
+  (dolist (common '(missing loaded error))
+    (emacs-agent-test-adapter
+      (emacs-agent-resources-test--project
+        (with-temp-buffer
+          (pcase common
+            ('loaded (emacs-agent-resources-test--write root "AGENTS.md" "COMMON"))
+            ('error (make-directory (expand-file-name "AGENTS.md" root))))
+          (make-directory (expand-file-name "EMACSAGENT.md" root))
+          (let* ((run (emacs-agent-test--submit "agent warning" root))
+                 (session (emacs-agent-run-session run)))
+            (dotimes (restored 2)
+              (when (= restored 1)
+                (emacs-agent-store-save session)
+                (kill-buffer (emacs-agent-session-log-buffer session))
+                (remhash (emacs-agent-session-id session) emacs-agent-session--registry)
+                (remhash root emacs-agent-session--selected)
+                (setq session (emacs-agent-session-get root)))
+              (emacs-agent--render-log session)
+              (with-current-buffer (emacs-agent-session-log-buffer session)
+                (should-not emacs-agent-log-details)
+                (should (string-match-p "Project instruction warning" (buffer-string)))
+                (should (string-match-p "Emacs agent instructions: error" (buffer-string)))
+                (should (string-match-p
+                         (regexp-quote (concat "not a regular file: "
+                                               (expand-file-name "EMACSAGENT.md" root)))
+                         (buffer-string)))
+                (when (eq common 'error)
+                  (should (string-match-p
+                           (regexp-quote (concat "not a regular file: "
+                                                 (expand-file-name "AGENTS.md" root)))
+                           (buffer-string))))))))))))
+
 (ert-deftest emacs-agent-resources-snapshot-survives-pending-restart-and-view ()
   (emacs-agent-test-adapter
     (emacs-agent-resources-test--project

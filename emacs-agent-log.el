@@ -427,10 +427,12 @@ Return local markers and overlays; never write to EVENT."
                                         (concat (emacs-agent-log--payload type payload) "\n\n"))
                                       (format "%S" event))
                               (memq type '(reasoning tool-call tool-result))))
-     ((and (eq type 'instructions) (plist-get payload :warnings))
+     ((and (eq type 'instructions)
+           (or (plist-get payload :warnings)
+               (plist-get (plist-get payload :emacsagent) :warnings)))
       (setq emacs-agent-log--tail nil)
       (emacs-agent-log--block event "Project instruction warning"
-                              (string-join (plist-get payload :warnings) "\n")))
+                              (emacs-agent-resources-summary payload)))
      ((not (memq type '(assistant reasoning user steering tool-call tool-result
                                  compacted inherited-summary input-recovery
                                  failed error cancelled paused interrupted compaction-stopped
