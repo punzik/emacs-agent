@@ -1,239 +1,541 @@
 # Emacs Agent
 
 An Emacs Lisp agent using gptel and one unrestricted `eval_elisp` tool in the
-live editor. Project identities separate conversations, not editor access.
+live editor. It reads and edits live buffers, runs Lisp and processes, and keeps
+independent persistent conversations per project or global scope. Project
+identity separates histories, **not access to the editor**.
 
-**Status: stage 5 implemented — persistent Chat Completions agent.**
-`emacs-agent-ask` sends through your configured Chat Completions backend/model.
-Turns are FIFO within a session; different sessions can request concurrently.
+## Contents
 
-- Specification: [docs/EMACS_AGENT_SPEC.md](docs/EMACS_AGENT_SPEC.md)
-- Pi/Pigo research and proposed post-MVP implementation plan:
-  [docs/POST_MVP_ROADMAP.md](docs/POST_MVP_ROADMAP.md)
-- Tested gptel baseline, integration decisions, risks and manual smoke test:
-  [docs/GPTEL_INTEGRATION.md](docs/GPTEL_INTEGRATION.md)
-- Prototype: `examples/emacs-agent-spike.el`
-- Reusable evaluator: `emacs-agent-eval.el`
-- Accepted architectural decisions: [docs/adr](docs/adr)
-- Live buffer reading helpers (F0): `emacs-agent-helpers.el`
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Conversation view](#conversation-view)
+- [Steering and pending input](#steering-and-pending-input)
+- [Conversations and forks](#conversations-and-forks)
+- [Context and project instructions](#context-and-project-instructions)
+- [Configuration](#configuration)
+- [Context budget and compaction](#context-budget-and-compaction)
+- [Lisp helpers and examples](#lisp-helpers-and-examples)
+- [Hooks](#hooks)
+- [Persistence and recovery](#persistence-and-recovery)
+- [Supported backends and limitations](#supported-backends-and-limitations)
+- [Security](#security)
 
-No global keybindings or user gptel configuration are changed. The adapter
-uses the pinned gptel revision documented below. A separate shell tool remains
-out of scope; shell execution is available through unrestricted Lisp.
+Developer documentation: [docs/development.md](docs/development.md).
+Architectural decision history: [docs/adr](docs/adr).
 
-## Installation and usage
+## Installation
 
 Tested with Emacs 30.2 and gptel 0.9.9.5 at commit
-`fc6963634af2f76a9909ad674e2c0b3f005e60b5` (see integration notes for
-installed package/dependency versions). The declared minimum Emacs is 28.1,
-not yet tested. Install/pin gptel using your normal Emacs package management,
-configure its Chat Completions backend/model, then add this repository to
-`load-path`. Package loading does not send requests. Unsupported gptel
-versions fail before network submission rather than silently replaying data.
+`fc6963634af2f76a9909ad674e2c0b3f005e60b5`. The declared minimum Emacs is
+28.1; it has not been tested. Pin gptel with your normal package manager: the
+adapter depends on its internal API, not just the package version number.
+
+1. Install that gptel revision and configure a trusted **OpenAI Chat Completions**
+   backend, model and credentials in gptel. Other backend types are unsupported.
+2. Clone this repository and add its directory to `load-path`.
+3. Load the package:
 
 ```elisp
-(add-to-list 'load-path "/path/to/emacs-ai-agent")
+(require 'gptel)
+;; Set gptel-backend, gptel-model and credentials for your endpoint here.
+(add-to-list 'load-path "/path/to/emacs-agent")
 (require 'emacs-agent)
-;; Optional user-chosen bindings:
+
+;; Optional: no global keybindings are installed by the package.
 (global-set-key (kbd "C-c a a") #'emacs-agent-ask)
 (global-set-key (kbd "C-c a s") #'emacs-agent-show)
 ```
 
-`M-x emacs-agent-ask` captures the original working buffer/window and editor
-positions **before** opening the minibuffer, then queues your text in the
-appropriate session. `RET` submits, `C-j` inserts newline, `C-g` aborts;
-`M-p`/`M-n` browse user prompt history. Blank input neither creates a session
-nor queues a turn. Multiline input uses the ordinary Emacs minibuffer.
+Loading sends no requests and does not change your gptel configuration or hooks.
+Offline history inspection does not require gptel. Requests use the current
+gptel backend/model, frozen when each input is accepted. Unsupported gptel
+contracts fail before network submission.
 
-`M-x emacs-agent-show` lazily creates/shows the corresponding read-only session
-view. It shows user/assistant text, supplied reasoning, tool calls/results and
-run statuses. `emacs-agent-stream` defaults to t; supported backends without
-streaming may return a single response, and nil requests non-streaming.
-Supplied reasoning is streamed as received, never reconstructed. Context metadata is kept
+## Quick start
+
+From a working buffer, run `M-x emacs-agent-ask` and enter, for example:
+
+- “Explain the selected code without changing it.”
+- “Find the cause of this error; inspect the current buffers first.”
+- “Replace this function, leave the buffer unsaved, and check its Lisp syntax.”
+
+The source buffer, window, point and region are captured **before** the
+minibuffer opens. `RET` submits, `C-j` inserts a newline, `C-g` aborts, and
+`M-p`/`M-n` browse prompt history. Blank input creates no conversation or turn.
+For long prompts, compose in an ordinary draft buffer, copy with `M-w`, return
+to the working buffer, ask, then `C-y` and `RET`. Context comes from the working
+buffer, not the draft; there is no custom full-buffer prompt editor.
+
+| Command | Purpose |
+| --- | --- |
+| `emacs-agent-ask` | Queue a new turn in the current conversation |
+| `emacs-agent-show` | Open its read-only conversation journal |
+| `emacs-agent-cancel` | Cancel its active run; allow the next queued turn |
+| `emacs-agent-resume` | Grant another tool-call budget to a paused run |
+| `emacs-agent-steer` | Send clarification to the active run |
+| `emacs-agent-pending` | Inspect/edit/withdraw/recover pending input |
+| `emacs-agent-show-instructions` | Inspect captured instructions, without rereading disk |
+| `emacs-agent-compact` | Summarize an idle conversation |
+| `emacs-agent-save` | Save the current conversation explicitly |
+
+Turns are FIFO within a conversation; different conversations can request
+concurrently. All tool evaluation is serialized across conversations, including
+recursive Emacs event loops. At the tool-call limit a run pauses **before** the
+next evaluation and keeps its slot until resumed or cancelled. Resume does not
+repeat completed tools. There are no automatic network or evaluation retries.
+
+Tools default to the live source buffer, or the run's transport buffer if the
+source died. Captured point, region and windows are context, not restored editor
+state. Asking from a journal uses its owner's last live working buffer; if that
+buffer died, ask from a working buffer to establish a new source.
+
+## Conversation view
+
+The journal displays user/assistant text, supplied reasoning, paired tool
+calls/results and run status. It updates incrementally during streaming;
+cancellation and errors preserve already received text. Context metadata is
 separate from displayed user text.
 
-During streaming, the journal updates incrementally without redrawing old entries.
-Adjacent text/reasoning chunks share a section; model history contains one
-assembled assistant message per HTTP response, not one message per token.
-An HTTP stream-end signal does not release the FIFO; only the run's terminal
-FSM state does. Cancel/error preserves already received partial text.
+Tool bodies initially show a preview of up to three logical lines/400
+characters. Expansion shows the retained expression, indexed `texts` payloads
+and result. Output truncation/unavailable notices stay visible when folded;
+expansion does not fetch external output files. Reasoning is folded by default
+and only displays what the provider actually supplied. Customize
+`emacs-agent-log-reasoning-face` to change its theme-aware `shadow` appearance.
 
-The default view is a conversation, not an audit dump: distinct user headings,
-plain assistant text and one paired `eval_elisp` block per call/result. Tools
-start with a bounded result preview (up to three logical lines/400 characters), while
-expansion shows retained expression, indexed `texts` payloads and result text. F3 truncation/unavailable notices
-remain visible even when folded; expansion does not retrieve an external artifact.
-Reasoning is initially folded (`emacs-agent-log-collapse-reasoning`, now t), as
-are tool bodies (`emacs-agent-log-collapse-tools`). `emacs-agent-show-reasoning`
-can hide supplied reasoning, including in details, without deleting stored data;
-reopen the journal to apply this policy to existing sections. Both the reasoning
-header and body use `emacs-agent-log-reasoning-face`, inheriting theme-aware
-`shadow` (gray); change it with `M-x customize-face`.
+| Journal key | Action |
+| --- | --- |
+| `TAB`, `<tab>`, `RET`, header click | Toggle a foldable section |
+| `D` | Toggle diagnostic details: IDs, lifecycle, configuration, usage |
+| `a` | Ask |
+| `C-c C-k` | Cancel |
+| `C-c C-c` | Resume |
+| `C-c C-s` | Steer |
+| `C-c C-p` | Pending input |
+| `g` | Render any unconsumed events |
 
-`TAB`, physical `<tab>`, `RET` or clicking a foldable header toggles it. TAB also
-works inside bodies/previews and leaves point on a visible header when hiding
-its current region. `▸`/`▾` reflect local state. `D` toggles diagnostic details:
-IDs, lifecycle events, frozen configuration and usage are inspectable without
-modifying history. Normal view keeps failures, pauses, instruction warnings and
-unsent-input notices visible, but omits routine service chatter. Explicit details
-rebuild preserves local folds and stays near the reader's event; streaming still
-only appends/updates the affected block. The header/buffer title use a short
-scope/name; collision-resistant IDs remain in conversation selectors.
+Readers of old text keep their position and scroll; only a point already at
+the end follows output. Callbacks do not select windows. Closing the journal
+neither cancels a run nor causes it to reopen on new output. Show replays the
+retained events. Reopen to apply changed reasoning visibility to old sections.
 
-Journal-local bindings: `a` asks, `C-c C-k` cancels, `C-c C-c` resumes, `g` consumes any
-unrendered events. Readers of old text retain point/window-start/pixel scroll;
-only points already at the end follow new text. Windows are never selected
-by callbacks. Closing the journal does not cancel a run or resurrect the
-view on subsequent chunks; `emacs-agent-show` replays all retained events.
-Two non-project buffers share the global session; files in one project share
-its canonical root key. Symlinked local roots are resolved when possible;
-remote roots are never locally canonicalized. Same-basename projects remain
-separate, with distinct journal names.
+Successful completion echoes up to three screen lines of the final answer,
+without opening a buffer or copying the preview to `*Messages*`. The full answer
+stays in history. Failed/cancelled runs do not notify; a selected window already
+showing that conversation suppresses the duplicate preview.
 
-`emacs-agent-status-mode` is enabled on initial package load and adds a cached
-activity component to `global-mode-string`, visible outside the journal too:
-`" AI:wait "`, `" AI:reply "`, `" AI:eval "`, `" AI:compact "` or
-`" AI:pause "`. One outer space on each side separates it from neighbouring
-mode-line components. Multiple conversations aggregate as, for example,
-`" AI:reply×2 eval q:1 "`; `q:N` counts ordinary pending turns, not historical
-inputs. Idle is completely hidden, including spaces. There is no timer/spinner,
-billing estimate or global redraw per streaming fragment. Disable with
-`M-x emacs-agent-status-mode`; custom mode lines must include `global-mode-string`
-to display it. Your `mode-line-format` is not replaced.
-`emacs-agent-status-prefix` (default `"AI"`) and `emacs-agent-status-labels`
-configure the strings. Customize refreshes the cached display immediately;
-after `setq`, call `emacs-agent-status-update`. For example:
+### Activity and usage
+
+`emacs-agent-status-mode` is enabled on initial load. It adds a cached component
+to `global-mode-string`: `AI:wait`, `AI:reply`, `AI:eval`, `AI:compact` or
+`AI:pause`. Multiple conversations aggregate (for example,
+` AI:reply×2 eval q:1 `); `q:N` counts ordinary pending turns. Idle is completely
+hidden. Disable with `M-x emacs-agent-status-mode`. A custom mode line must
+include `global-mode-string`; the package does not replace `mode-line-format`.
+
+Usage in journal details and session info is **gptel-normalized** expenditure
+per HTTP response and per run: input-uncached, cache-read, output, input-total
+(input + cache), and total. Missing fields are unknown, not zero; one missing
+request makes that total unknown. A normalized zero cache count need not mean
+the provider reported zero. These are not context-window sizes or billing
+estimates. Usage survives restart and is never injected into model history.
+
+## Steering and pending input
+
+`emacs-agent-steer` captures its own context and delivers clarification after the
+**entire tool batch**, never between tools. It works for paused runs, but errors
+without an active run. It does not replace that run's source buffer, settings or
+instructions. If the target completes before delivery, steering becomes a new
+FIFO turn behind older asks, with its own captured configuration. Cancel/error
+retains undelivered steering for explicit recovery.
+
+In `emacs-agent-pending`: `g` refreshes, `e` edits, `d` withdraws, `r` resubmits,
+`D` forgets withdrawn input with confirmation, and `RET` shows full text.
+Editing withdraws **before** opening the minibuffer; `C-g` keeps the original
+withdrawn text. Submitting the edit appends it at the tail with its original
+context/configuration/instructions, not a capture from the pending view.
+Live-target steering stays steering; stopped/restarted recovery becomes an ask.
+
+Defaults allow eight undelivered entries per conversation and 256 KiB of UTF-8
+frozen payloads, including context and instructions. Withdrawn recovery counts
+toward both limits. Overflow rejects new input without eviction; withdrawing
+does not free space, but reuse or explicit forgetting does.
+
+After restart inputs are recovery-only, never automatically sent. Recovery
+checks the live source identity and configured backend, prompting if unavailable.
+Credentials are not saved; context, instructions and model settings stay frozen.
+
+## Conversations and forks
+
+Files in a project share a canonical root scope; non-project buffers use the
+global scope. Local symlinked roots are resolved when possible; remote roots
+are not locally canonicalized. Same-basename projects remain separate.
+
+| Command | Purpose |
+| --- | --- |
+| `emacs-agent-session-new` | Save the old conversation and select an empty one; `C-u` asks for a name |
+| `emacs-agent-session-rename` | Save a name; empty clears it; names need not be unique |
+| `emacs-agent-session-select` | Select a conversation within the current scope, newest activity first |
+| `emacs-agent-session-list` | List saved conversations; `g` refreshes, `RET` opens a journal |
+| `emacs-agent-session-search` | Regexp search across local names/history/summaries/events in all scopes |
+| `emacs-agent-session-clone` | Select an independent copy; `C-u` asks for a name |
+| `emacs-agent-session-fork` | Select a completed turn and fork through it; `C-u` also asks for a name |
+| `emacs-agent-session-info-show` | Show IDs, scope, source liveness, state, history, usage and save status |
+
+`emacs-agent-session-info` also returns the information as a plist, accepting a
+session object or ID, without requesting, loading archives or creating views.
+Search needs no model/index and does not read external output artifacts.
+
+Selectors show a short conversation ID and the original first user request,
+normalized and clipped to minibuffer width. Empty conversations show their name
+or `(empty)`. Colliding short IDs extend automatically. The ID suffix matches
+the saved filename. **RET in the session list opens but does not select**;
+new/select/clone/fork explicitly select and focus a journal. Commands from an
+unselected journal still target its owner. Ask captures its existing target
+before prompt entry, so selection changes while typing do not retarget it.
+
+Each Emacs process starts a fresh global conversation on first implicit use.
+Old globals remain explicitly selectable; project selections persist. Merely
+listing/searching/showing archives does not select them.
+
+New/select/clone/fork require involved conversations idle: no active/paused run,
+ordinary queue, compaction or prepared/queued input. Rename requires its target
+idle. Withdrawn recovery may remain. Explicit conversation operations persist
+even when autosave is off; save/selection failure leaves the old selection intact.
+A candidate written before a pointer-save failure may remain unselected on disk.
+
+Clone copies archival messages/events and compaction with provenance, not pending
+recovery, queues, usage anchor, runtime handles or execution authority. A working
+buffer invoking new/select/clone becomes the new source; an archive-only clone
+does not inherit an execution source. Output artifact references remain shared.
+
+Fork endpoints are successful completed turns, including their delivered
+steering and tool pairs, not individual tools, failed/cancelled turns or active
+work. After compaction the latest summary is the first logical endpoint: fork
+after it alone or a retained completed turn, not inside the summarized prefix.
+The fork inherits the summary and chosen suffix, excluding later work and queued
+input. From a journal it uses the last working buffer only if still live.
+The original is unchanged. **Buffers, files and processes are not rolled back;
+tools are never replayed.**
+
+## Context and project instructions
+
+Snapshots capture absolute character positions, widening-aware 1-based lines
+and 0-based columns, narrowing bounds, file/mode/directory and optional region
+text. Selections over `emacs-agent-region-text-limit` retain bounds only. No full
+buffer is automatically captured. Context uses framed JSON and is separate from
+user text.
+
+`emacs-agent-context-history` controls automatic snapshots sent to the model:
+
+- `current` (default): the active run's inputs, including tool continuations;
+- `full`: all retained captured snapshots;
+- `nil`: no automatic editor context.
+
+Adjacent identical snapshots are elided, but A→B→A remains. This never removes
+user/assistant text or tool arguments/results, nor changes stored history. The
+policy freezes at submission. Private transport disables ambient gptel prompt
+transforms/history truncation without changing the user's gptel settings.
+
+### Instruction files
+
+For each new input, read **one saved common file from the project root only**,
+in this priority order:
+
+`AGENTS.override.md` → `AGENTS.md` → `AGENTS.MD` → `CLAUDE.md` → `CLAUDE.MD`.
+
+Then append optional **`EMACSAGENT.md`** from the same root, even if no common
+file exists. Each file gets its own path heading. No global, parent or nested
+search and no templates are supported. An empty higher-priority file wins;
+a selected unreadable/bad file warns rather than silently falling back. Errors
+in one file do not suppress the other. Symlinks are followed normally.
+
+Instructions are captured from disk after prompt entry and before enqueue;
+unsaved changes are not used. The snapshot is added to that run's system prompt,
+independently of context-history policy, and stays frozen through FIFO waits,
+continuations and recovery. Earlier instruction snapshots remain in audit, not
+API history. Files do not execute Lisp or configure gptel.
+
+Set `emacs-agent-project-instructions` to nil to opt out of both files for new
+inputs; `setq-local` in a source buffer provides a local opt-out. The journal
+shows paths/status/warnings. `emacs-agent-show-instructions` shows captured text
+for the active run or last submitted snapshot without rereading disk.
+
+## Configuration
+
+Use `M-x customize-group RET emacs-agent` or set the variables below. Defaults:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `emacs-agent-stream` | `t` | Request streaming; nil requests a single response |
+| `emacs-agent-max-tool-calls` | `100` | Tool calls per budget block; zero pauses before any evaluation |
+| `emacs-agent-context-history` | `current` | Automatic snapshot policy: `current`, `full`, nil |
+| `emacs-agent-region-text-limit` | `8192` | Maximum captured region characters |
+| `emacs-agent-project-instructions` | `t` | Read root instruction files for new inputs |
+| `emacs-agent-context-tokens` | `262144` | Configured context budget, not model discovery |
+| `emacs-agent-context-reserve` | `16384` | Headroom before compaction |
+| `emacs-agent-compaction-keep-recent` | `20000` | Recent-history retention target in estimated tokens |
+| `emacs-agent-auto-compact` | `t` | Compact before an oversized request; requires autosave |
+| `emacs-agent-pending-input-limit` | `8` | Undelivered inputs per conversation, including withdrawn recovery |
+| `emacs-agent-pending-byte-limit` | `262144` | Frozen pending payload budget in UTF-8 bytes |
+| `emacs-agent-eval-output-limit` | `32768` | Returned tool text limit in characters |
+| `emacs-agent-data-directory` | `emacs-agent/` under `user-emacs-directory` | Private snapshots and full tool output |
+| `emacs-agent-auto-save` | `t` | Best-effort automatic conversation checkpoints |
+| `emacs-agent-show-reasoning` | `t` | Display supplied reasoning; stored data is unaffected |
+| `emacs-agent-log-collapse-tools` | `t` | Initially fold tool bodies |
+| `emacs-agent-log-collapse-reasoning` | `t` | Initially fold supplied reasoning |
+| `emacs-agent-final-response-lines` | `3` | Preview screen lines; zero disables |
+| `emacs-agent-final-response-part` | `start` | Preview beginning or `end` of final answer |
+| `emacs-agent-status-prefix` | `"AI"` | Activity prefix; empty omits it and the colon |
+| `emacs-agent-status-labels` | See below | Activity-label alist; missing keys fall back to state names |
 
 ```elisp
-(setq emacs-agent-status-prefix "AI"
+(setq emacs-agent-final-response-lines 0
       emacs-agent-status-labels
-      '((waiting . "wait") (responding . "→") (eval_elisp . "eval")
+      '((waiting . "wait") (responding . "reply") (eval_elisp . "eval")
         (compacting . "compact") (paused . "pause") (queued . "q")))
+;; Customize refreshes automatically; after setq refresh the status explicitly:
 (emacs-agent-status-update)
 ```
 
-An empty prefix omits it and its colon; missing labels fall back to state names.
-See [ADR-0015](docs/adr/0015-conversation-ui-and-activity-status.md).
+The package also exposes `emacs-agent-minibuffer-map` for prompt keybindings and
+`emacs-agent-prompt-history` for user-written prompt history. It defines no
+project-specific environment variables; backend credentials/configuration belong
+to gptel.
 
-Asking from a journal retains its owner session and captures its last live
-working buffer, not the journal. If that buffer died, ask from a working
-buffer instead. Showing the journal still works without a live source.
+## Context budget and compaction
 
-Snapshots store absolute positions and widening-aware line/column (1-based
-line, 0-based column), plus narrowing bounds, file/mode/directory and optional
-region text. `emacs-agent-region-text-limit` defaults to 8192 characters;
-longer selections retain only bounds. No full buffer is captured. Context is
-serializable framed JSON, escaped so buffer names/region text cannot forge
-section delimiters; it never appears as part of displayed user text.
+Set the budget for your actual model; it is not discovered from its name/alias.
+Reserve + retention must be strictly below context. Settings freeze per input.
+Above context minus reserve, automatic compaction makes one tool-free summary
+request, then rebuilds and checks the normal request once. Failure or a still
+oversized request stops explicitly: no silent history dropping, tool replay or
+provider-error retry loop. The estimate uses characters/4 plus framing, with
+usage-based calibration when available; it is not a tokenizer or billing count.
 
-`emacs-agent-context-history` defaults to `current`: the active run's input
-snapshots are sent, including every tool continuation. Adjacent identical
-snapshots are elided without dropping input text; A→B→A is retained. `full`
-includes all captured snapshots; nil sends no automatic context. Tool arguments/results
-and assistant/user text are never removed by this policy. Policy is frozen at
-submission, so queued runs and their tool continuations cannot switch modes
-mid-turn. Filtering never mutates stored snapshots or history records.
-Ambient gptel prompt transforms and chat UI history truncation are disabled
-for the private transport only; user's gptel settings/hooks are unchanged.
+`emacs-agent-compact` summarizes an idle session. `C-u` asks for retention
+(including zero to summarize all) and optional focus. Cancel also cancels
+compaction; queued asks wait for it. Manual compaction always saves before
+publishing. Automatic compaction requires autosave and does not write history
+when autosave is disabled.
 
-### Steering and pending input
+The model projection becomes summary + recent suffix; original messages,
+snapshots, tool pairs and journal remain stored. Retention is a target; safe
+boundaries can retain less. Repeated compaction uses the previous summary, not
+its raw prefix. Under `current`, delivered current-run snapshots remain explicit;
+under `full`, old summarized snapshots are represented by the summary.
 
-`M-x emacs-agent-steer` captures its own context and queues clarification for the
-current active run (paused runs too). It delivers after the **entire tool batch**,
-never between tools. It does not change that run's execution buffer, settings or
-system instructions. With no active run it errors; ordinary `ask` remains FIFO.
-If the captured target completes during input or before delivery, clarification
-becomes a new FIFO run behind older asks, with its own frozen configuration and
-instructions. Cancel/error retains undelivered steering for explicit recovery;
-independent ordinary queued asks keep their existing FIFO behavior.
+Summary input is **lossy**: each block keeps a UTF-8-safe 2000-byte prefix, and
+the total transcript keeps a bounded first-quarter/newest-tail layout. Details,
+errors and paths may be omitted. Requested summary sections are Goal, Constraints
+& Preferences, Progress, Key Decisions, Next Steps and Critical Context; quality
+and headings are not guaranteed. Only a completed nonblank summary and successful
+save change the projection. Failed save/cancel leaves the previous projection;
+an already committed summary remains if the rebuilt request is still too large.
+Restart never resumes a summary automatically.
 
-`M-x emacs-agent-pending` opens a read-only list of pending asks and steering:
-`g` refresh, `e` edit, `d` withdraw, `r` resubmit, `D` forget withdrawn input with
-confirmation, `RET` full text. Editing withdraws **before** opening the minibuffer;
-`C-g` keeps the original withdrawn text. `RET` resubmits at the tail with original
-context/config/instructions, not a new capture from the pending view. Live-target
-steering stays steering; stopped/restarted recovery becomes an ordinary ask.
-Lifecycle updates refresh an already open view without selecting windows.
+## Lisp helpers and examples
 
-`emacs-agent-pending-input-limit` defaults to 8 undelivered entries per session,
-including withdrawn recovery. `emacs-agent-pending-byte-limit` defaults to 256 KiB
-of UTF-8 frozen run payloads (text/context/instructions included). Overflow
-rejects the new submission without evicting existing input. Withdraw does not
-free recovery space; reuse or explicitly forget it. These are not audit retention
-limits. Persistence remains best-effort with visible save warnings.
+Helpers are ordinary Lisp functions available through the **same** `eval_elisp`
+tool, not additional model tools. `C-h f` provides their full contracts.
+The model receives core helper examples and edit/save/check guidance in its
+system prompt. Unrestricted Lisp can still bypass these helpers.
 
-After restart inputs are recovery-only, never automatically sent. Recovery checks
-live source identity and configured backend, prompting if unavailable; credentials
-are not saved. Context/instructions/model settings stay frozen. Offline inspection
-does not require gptel. Journal shortcuts: `C-c C-s` steer, `C-c C-p` pending.
-
-Offline coverage includes real pinned streaming/non-streaming parsing with mocked
-HTTP, lifecycle/reentrancy, bounds and recovery. Live F2 smoke is still separate.
-F2 introduced state structs requiring restart on upgrade. F6 later replaced the
-storage namespace: pre-F6 snapshots are not imported (see Persistence below). See
-[ADR-0007](docs/adr/0007-steering-boundaries.md).
-
-Snapshot autosave uses fast per-record Lisp serialization, not recursive
-pretty-printing in network callbacks. Schema, immediate boundary saves, partial
-checkpoints and atomic writes are unchanged. A private ~391 KB session benchmark
-reduced full save from ~976 ms to ~14 ms; the user subsequently confirmed that
-the input stalls disappeared during the repeated live test. See [ADR-0008](docs/adr/0008-responsive-snapshots.md).
-
-### Temporary final-answer message
-
-Successful completion echoes a short preview without opening a buffer. By
-default it shows the beginning, up to **3 screen lines** including wrapping
-and any `...` marker. The complete answer remains in the journal/history;
-reasoning, tool commentary and failed/cancelled runs do not notify. If the
-selected window already shows that session's journal, the duplicate echo is
-suppressed. A background journal, another session's journal or an instructions
-view does not suppress the notification.
+### Reading live buffers
 
 ```elisp
-(setq emacs-agent-final-response-lines 3)   ; 0 disables the message
-(setq emacs-agent-final-response-part 'start) ; or 'end
+(emacs-agent-buffer-info "example.el")
+(emacs-agent-read-lines "example.el" 14 20 :widen t)
+(emacs-agent-read-around "example.el" 367 :before 2 :after 2 :widen t)
 ```
 
-This is a normal transient `message`, not a persistent minibuffer view or a
-separate timer. Previews are not copied into `*Messages*` and do not replay
-when the journal is reopened. See [ADR-0006](docs/adr/0006-final-response-echo.md).
+Use an explicit live buffer or exact name. Reads include unsaved text and
+preserve point, mark, narrowing and windows. Lines are absolute and 1-based;
+columns are 0-based display columns; positions are characters. Empty buffers
+have one line, and a terminal newline adds an empty line. Bound END using
+`:total-lines` from the result, not guessed EOF. Without explicit `:widen t`,
+inaccessible or partially inaccessible lines are rejected, not clipped.
 
-### Project instructions (F1)
+Results are plists with metadata and one literal `:text`. `:start`/exclusive
+`:end` are positions; `:total-lines` counts the whole buffer even under
+narrowing. The newline after requested END is excluded. Around adds `:at`.
+`:limit` defaults to 4096 text characters, possibly reduced by output budgeting.
+On `:truncated t`, resume the same range with `:from NEXT-POSITION :tick TICK`
+from the result, concatenating `:text` without extra separators. A stale tick
+fails; names and unguarded positions are not persistent identities.
 
-New inputs read **one common saved file from the project root only**, in this order:
-`AGENTS.override.md` → `AGENTS.md` → `AGENTS.MD` → `CLAUDE.md` → `CLAUDE.MD`.
-Then **`EMACSAGENT.md`** from the same root is appended as agent-specific
-instructions. It is optional and also works without a common file. Each file
-has its own path heading; errors in one do not suppress the other.
-There is no global/parent/nested-directory discovery and no template support.
-An empty higher-priority file still wins. A selected unreadable/bad file logs
-warnings and contributes no instructions; it does not silently fall back.
-No project or no matching file is normal. Reading follows normal filesystem
-symlinks and is not a sandbox boundary.
+Return a read helper as the sole final form without stdout so its complete
+plist fits the tool budget. If metadata cannot fit, the helper errors rather
+than returning an incomplete plist. Wrapping/printing more can still trigger
+general output truncation. Final string values are printed without text
+properties; use `buffer-substring-no-properties` for explicit plain-text reads.
 
-Instructions are captured from disk on submission, after prompt entry and
-before enqueue. Unsaved instruction-buffer changes are not used. The source
-buffer/root/editor point are still captured before entering the minibuffer.
-The snapshot is appended to the current run's system prompt, independently of
-`emacs-agent-context-history`; changes to files/settings while waiting in FIFO
-or running do not replace it. Earlier snapshots stay in audit, not API history.
-Instruction files never execute Lisp or configure gptel.
+### Editing and saving
 
-Set `emacs-agent-project-instructions` to nil to opt out of both files for new submissions;
-`setq-local` in a source buffer provides a local opt-out. The journal shows
-status/path/warnings. `M-x emacs-agent-show-instructions` shows the **captured**
-text for the active run, or the last submitted snapshot if idle, without
-rereading disk. Restored snapshots remain inspectable; nothing resumes itself.
-See [ADR-0005](docs/adr/0005-root-project-instructions.md) and
-[ADR-0023](docs/adr/0023-emacsagent-instructions.md).
+```elisp
+;; Replace TICK with the integer from a fresh read.
+(emacs-agent-replace-texts "example.el"
+  '((:old "unique old text" :new "replacement")
+    (:old "another unique fragment" :new "another replacement"))
+  :tick TICK)
+
+(emacs-agent-replace-region "example.el" START END OLD NEW :tick TICK)
+;; Save separately, only when intended:
+(with-current-buffer "example.el" (save-buffer))
+```
+
+Batch OLD strings must be nonempty and match exactly once, case-sensitively,
+in the original accessible text. All ranges are validated before editing;
+overlap/duplicates fail, adjacency is allowed. Application is bottom-up, so
+replacement text never locates a later OLD. Empty NEW deletes; include an OLD
+anchor in NEW to insert. Results report buffer, tick, modified state and the
+number of changed edits, not full source. All-no-op edits preserve tick/undo.
+
+Region positions are absolute characters, END exclusive; empty OLD at START=END
+inserts. `:widen t` explicitly allows editing outside narrowing. Stale tick/text,
+dead/read-only buffers, disabled undo and external visited-file changes fail.
+Reread and recompute on rejection; do not guess offsets or bypass guards.
+String indices are 0-based, unlike buffer positions: index I captured from BASE
+maps to BASE+I, where BASE may not be 1 under narrowing.
+
+Edits are atomic and one undo step, separate from existing undo. Normal hooks
+run; rollback covers target text, not arbitrary external hook effects. Point,
+mark and narrowing track changes as markers. Neither helper saves.
+`save-buffer` saves the **whole buffer**, including pre-existing user changes;
+a save failure leaves edits inspectable/undoable. Do not fake saves with
+`set-buffer-modified-p nil`, shell writes or routine `revert-buffer`.
+Undo follows normal Emacs limits and is not persisted across restart.
+
+### Text payloads
+
+Avoid embedding large/quoted text in Lisp string literals by passing optional
+`texts`, a JSON array of strings:
+
+```json
+{
+  "expression": "(emacs-agent-replace-region \"test.ml\" 1 4 (nth 0 emacs-agent-texts) (nth 1 emacs-agent-texts) :tick 210)",
+  "texts": ["old", "let () = print_endline \"Привет\"\n"]
+}
+```
+
+Adapt buffer/range/tick to a fresh read. Text is escaped for JSON only; no extra
+unescaping, joining or evaluation occurs. `emacs-agent-texts` is a fresh list
+bound during that invocation, usable across buffers and with native Lisp.
+Omitted `texts` or `[]` means empty; null/non-string arrays are rejected before
+execution. Runtime strings are copies; nested calls restore outer bindings.
+Direct `emacs-agent-eval` callers may supply a vector or proper list as the
+optional second argument. Payloads are ordinary retained tool arguments, visible
+in the journal and included in context budgets, not a secret channel or sandbox.
+
+### Lisp structure
+
+```elisp
+(emacs-agent-check-sexps "example.el")
+(emacs-agent-inspect-sexps "example.el" :depth 2 :limit 32)
+(emacs-agent-replace-sexp "example.el" START END OLD NEW :tick TICK)
+```
+
+No paredit dependency is needed. Check reads without evaluation and returns
+`:ok`, `:forms-read` and the first `:diagnostic` with absolute character position,
+1-based line, 0-based display column and bounded literal context. EOF locations
+are hints, not certain fixes. Source symbols are read into an isolated symbol
+table; hash-table records are read generically without user-defined hash tests
+or native constructor-specific validation.
+
+Inspect returns a JSON string with source ranges, kind, completeness, preview,
+expandability and requested children. It retains readable children of incomplete
+forms. Lists, vectors and quote prefixes expand; other constructs are opaque.
+`:depth` is 0..8 (default 1); `:limit` is 1..1000 total nodes (default 64).
+Truncation is explicit; `next-position` resumes omitted top-level forms only.
+Explore nested ranges explicitly. Oversized JSON errors rather than returning
+invalid partial JSON; request fewer nodes/lower depth.
+
+Both readers accept `:start`, `:end`, `:tick`, `:widen`, defaulting to accessible
+text. A narrowed/ranged check validates a standalone fragment, not the whole file.
+Replace requires exact OLD, a fresh integer TICK and one whole inspected form.
+NEW is exactly one form without surrounding whitespace/comments, or empty to
+delete; surrounding accessible text must remain valid. For broken buffers,
+`:repair t` allows any nonempty OLD range and arbitrary NEW, but all accessible
+text must read successfully afterward. Include an adjacent anchor when inserting
+a missing delimiter. Source-copy preflight and atomic post-hook validation
+reject invalid edits. No automatic save; reader validity is not correctness.
+
+### Checking code and running processes
+
+Use **edit → explicitly save when intended → check → reread changed ranges after
+the last check**. Distinguish edited, saved and checked. Disk commands cannot
+validate unsaved text; do not silently save/discard user changes to run them.
+Editor diagnostics may check unsaved text, but verify the active backend and
+freshness rather than merely finding loaded features/commands.
+
+```elisp
+(emacs-agent-run-process "make" ["test"] :directory "/path/to/project/")
+```
+
+This synchronous helper uses literal argv (list or vector), no implicit shell,
+and combined stdout/stderr. The result contains `:output`, expanded `:directory`,
+actual `:command`, and `:exit` (integer or signal string). Require **integer 0**
+before claiming success, not empty output. Bare names use PATH; executable paths
+with directory components resolve relative to cwd. Remote program names must
+use the same host. It does not save, edit, retry, clean generated files or
+interpret success. Launch errors/quit propagate. Long synchronous checks block
+Emacs; use local async jobs instead:
+
+```elisp
+(emacs-agent-job-start "make" ["test"] :directory "/path/to/project/") ; → ID
+;; Substitute the returned string for ID in later calls:
+(emacs-agent-job-status ID)
+(emacs-agent-job-read ID :from 0 :limit 4096)
+(emacs-agent-job-list :from 0 :limit 20)
+(emacs-agent-job-cancel ID)
+(emacs-agent-job-forget ID) ; terminal jobs only
+```
+
+Async jobs are local only (no TRAMP/implicit shell), with shared UTF-8 stdout/
+stderr in a private buffer. Status is `running`, `exited`, `signaled` or `failed`;
+integer `:exit` exists only for ordinary exit, `:signal` for signal termination.
+Read resumes with zero-based character `:next-offset`. `:truncated nil` means
+only the end available **now**; `:complete t` also requires a terminal job.
+Reads neither wait nor consume output. List is paginated, newest first.
+
+There is no automatic polling, model continuation, save, retry, restart recovery
+or link to run cancellation. Jobs are shared across Emacs, not access-isolated.
+Full output stays **in memory until forget/restart**; read bounds do not bound
+memory. Cancellation does not guarantee stopping descendants or rollback.
+Forget removes a terminal job's record/output, not files created by it.
+
+### Evaluation diagnostics and full output
+
+Forms execute sequentially with no rollback, save or repeat. Read errors do not
+undo prior forms; evaluation errors may follow mutations within the same form.
+Errors/quits include phase, form number, completed-form count and locations
+(1-based character positions/lines, 0-based **character** columns). Reader
+failures include bounded escaped context and possible syntax hints. Execution
+errors may include up to eight function names/signatures, not argument/closure
+dumps. Debugger capture is local, noninteractive and best effort.
+
+A compact footer reports net changes in the actual source buffer, including
+rename/kill/modified state; it does not check other buffers or external effects.
+It preserves point, narrowing and undo but does not repair or certify saved data.
+
+If output exceeds `emacs-agent-eval-output-limit`, full text is saved as UTF-8 in
+a unique 0600 file under `emacs-agent-data-directory/tool-output/`. The model
+receives a **tail** plus a quoted absolute-path notice. The notice counts toward
+the limit; if it alone exceeds it, the notice is returned intact. Exact-limit
+results create no file. Small budgets can truncate even diagnostics/final values.
+Write failure returns an unavailable warning, never repeats evaluation or points
+to a partial file. Inspect artifacts as data with `insert-file-contents`, never
+load them as code. Files have no automatic deletion/quota; delete manually.
+Moving/deleting them invalidates old references. Collection is still in memory:
+this is neither a memory nor execution limit.
 
 ### Registering user helpers
 
-Load your ordinary Elisp function, then register its compact description:
+Load an ordinary function, then advertise a compact description:
 
 ```elisp
-(require 'emacs-agent)
-(require 'my-diagnostics) ; your implementation, loaded separately
+(require 'my-diagnostics) ; load your implementation separately
 (emacs-agent-register-helper
  'my-diagnostics
  :description "Read current buffer diagnostics."
@@ -245,688 +547,115 @@ Load your ordinary Elisp function, then register its compact description:
 ```
 
 `:description` and `:returns` are required nonempty strings. Omit optional
-`:constraints` / `:example` when unnecessary; passing nil is not supported.
-Name/signature are automatic; full docstrings are not sent. The format is:
-
-```text
-User helpers (via eval_elisp):
-(my-diagnostics buffer)
-  Read current buffer diagnostics.
-  Returns: List of (:line :column :severity :message).
-  Constraints: Requires an active checker; does not save or modify buffers.
-  Example: (my-diagnostics "main.ml")
-```
-
-Keep purpose and result shape concise. Describe preconditions, missing/error
-results, important fields, effects on buffers/files, save behavior, coordinate
-units and continuation rules where relevant. Do not repeat the signature or
-shared eval instructions. A short example is optional literal text: registration
-neither parses nor executes it. Prose whitespace is collapsed; inner example
+`:constraints`/`:example` instead of passing nil. Signature/name are automatic;
+full docstrings are not sent. Keep purpose/result shape concise; mention effects,
+preconditions, errors, coordinate units and continuation rules as appropriate.
+Examples are literal text, not executed. Prose whitespace is collapsed; example
 text is preserved. See `C-h f emacs-agent-register-helper` for the full contract.
 
-The global runtime registry adds one name-sorted block after project instructions,
-including without a project or with project-file opt-out. Re-registering updates
-the entry atomically; do this after redefining the function. Autoloads, undefined
-functions, macros and special forms are rejected: registration never loads code.
-Usage metadata is preferred for `cl-defun` keyword signatures, with argument
-introspection as fallback; unavailable signatures require a Lisp wrapper.
-Only the resolved definition is inspected: symbol `function-documentation`
-overrides are ignored because they can evaluate Lisp.
+The global runtime registry contributes a name-sorted block after project
+instructions, even without a project or with file instructions opted out.
+Re-register after redefining a function. Autoloads, undefined functions, macros
+and special forms are rejected; registration never loads code. Unsupported
+signatures require a Lisp wrapper. New inputs freeze descriptions; queued turns,
+continuations, recovery and instructions views use saved text, not the registry.
+Descriptions count toward pending/context budgets. Snapshots restore neither
+function code nor registry entries. Unregistering is **not access revocation**:
+older runs retain descriptions and eval remains unrestricted.
 
-New inputs freeze their descriptions at submission. FIFO/tool continuations,
-recovery and instructions view use saved text, not the current registry. Text
-counts toward pending-byte and request-context budgets. Snapshots do not restore
-function code or registry entries. Unregister is **not access revocation**;
-`eval_elisp` remains unrestricted and older runs keep their snapshot. These are
-ordinary helpers, not extra model tools. See
-[ADR-0024](docs/adr/0024-user-helper-registration.md).
+## Hooks
 
-### Model I/O efficiency (F0c)
+These abnormal hooks observe sessions; use `add-hook`/`remove-hook`:
 
-A string final value from `eval_elisp` is printed without text properties.
-For example, returning `(buffer-string)` no longer serializes font-lock/eglot
-metadata into the model context. Source strings/buffers are not modified.
-Use `buffer-substring-no-properties` for explicit plain-text reads; do not
-mutate a buffer just to inspect or verify it. Explicit property inspection,
-non-string Lisp values and explicit `prin1` output retain their semantics.
-Output limits still apply to the useful text.
+| Hook | Callback arguments | When |
+| --- | --- | --- |
+| `emacs-agent-session-event-functions` | `SESSION EVENT` | After a structured event is appended |
+| `emacs-agent-session-state-functions` | `SESSION` | After a runtime-only state transition; no durable event implied |
 
-Read results now use one literal `:text` plus range metadata, without per-line
-plists. Batch exact-text edits and per-HTTP/run usage accounting are implemented.
-The system prompt has executable examples for core reading/editing helpers,
-field extraction, continuation, read→batch and separate saving. Tests
-run the actual examples through the evaluator on disposable visited files;
-local variables do not survive another tool call. F0b optimizes the disk archive,
-not the model's history. Findings and contracts:
-[ADR-0004](docs/adr/0004-efficient-model-io.md). Token savings must be measured
-with the same model/settings and comparable usage/cache metrics.
-
-### Usage accounting
-
-The journal records `usage` for each HTTP response and `usage-total` for the
-run, separately from model history. Counts are explicitly **gptel-normalized**:
-input-uncached, cache-read, output, input-total (input + cache), and total.
-`:tokens-full` is retained only for reconciliation, never added repeatedly.
-Missing usage is `unknown`, not zero; one missing request makes that field's
-run total unknown. Zero cache in gptel's normalized data is not proof that the
-provider reported zero: gptel defaults some absent raw fields to zero.
-These counters measure expenditure over requests, not context-window size or
-billing. Configured backend/model names can still be aliases.
-
-Usage survives snapshot/restart, including interrupted-run audit, and is shown
-when the journal is reopened. No usage is injected into API history. Both
-streaming and non-streaming were checked against the available real gptel model
-using temporary source data; this is not a token-savings benchmark.
-
-### Context budget and compaction (F4)
-
-Pigo-style compaction is enabled before each model request, including after a
-complete tool batch. Defaults:
+EVENT is a plist with `:id`, `:time`, `:session-id`, `:run-id`, `:type` and
+`:payload`. Payload shape depends on event type. Callbacks run synchronously;
+keep them fast and observational, without mutating history or issuing recursive
+agent commands. Errors/quits are reported without stopping other observers or
+stranding the run. Built-in observers handle rendering, pending views, status
+and autosave; do not replace the hook lists wholesale.
 
 ```elisp
-(setq emacs-agent-context-tokens 262144
-      emacs-agent-context-reserve 16384
-      emacs-agent-compaction-keep-recent 20000
-      emacs-agent-auto-compact t)
+(defun my-emacs-agent-observe (session event)
+  (when (eq (plist-get event :type) 'error)
+    (message "Agent error in %s: %S"
+             (emacs-agent-session-id session) (plist-get event :payload))))
+(add-hook 'emacs-agent-session-event-functions #'my-emacs-agent-observe)
+;; (remove-hook 'emacs-agent-session-event-functions #'my-emacs-agent-observe)
 ```
 
-These are **configured local budgets**, not discovered capabilities of the model
-or the `main` alias. Set them to suit the actual model. Reserve + retention must
-be strictly below context. Settings freeze with each accepted input.
-
-Above context minus reserve, one summary request runs without tools, then the
-normal request is rebuilt and checked once more. Failure or a still-oversized
-request stops explicitly; nothing is silently dropped and tools are never
-reexecuted to repair history. Provider context errors do not trigger a retry loop.
-The estimate uses Unicode characters/4 plus framing, calibrated by the latest
-known normalized input+cache+output and estimated delta when available. It is
-not a tokenizer, exact context measurement, or billing count.
-
-`M-x emacs-agent-compact` manually summarizes an idle session. `C-u` asks for
-retention (including **0** to summarize all) and optional focus. Existing cancel
-also cancels in-flight compaction. Queued asks wait for it. Manual compaction
-always persists before publishing; automatic compaction requires autosave so
-turning autosave off does not unexpectedly write history.
-
-Summary requests now use Pi's dedicated summarizer system prompt, explicit
-`<conversation>` / `<previous-summary>` blocks and initial/update checkpoint
-instructions **after** the data. Six sections are requested: Goal, Constraints
-& Preferences, Progress, Key Decisions, Next Steps, Critical Context. Previous
-summary appears once in its separate block (with the existing 2000-byte limit).
-Focus follows the template. Headings are requested, not validated; no retry or
-new acceptance rule was added. Existing saved summaries are not rewritten.
-See [ADR-0011](docs/adr/0011-pi-summary-request-framing.md).
-
-Original messages, snapshots, tool pairs and the journal remain intact. Only the
-model projection changes to summary + recent suffix. Retention is a target;
-boundary adjustment can retain less. Repeated compaction includes the previous
-summary, not its old raw prefix. Retained call IDs and protocol reasoning remain
-paired. Under `current`, delivered current-run snapshots remain explicit even
-if their old text was summarized; `full` applies to retained raw history, with
-older snapshots represented by summary; nil omits snapshots.
-
-Like pigo, summary input is lossy: each block keeps a UTF-8-safe **2000-byte
-prefix**, and total transcript uses a bounded first-quarter/newest-tail layout.
-Long values/errors/file references can therefore be omitted from the summary
-input; their original journal records and any F3 files are not removed.
-Only a completed nonblank summary and successful snapshot write change the
-projection. Cancel while generating or failed saving leaves the previous
-projection. An already committed summary remains if the rebuilt request is still
-too large. Restart never resumes
-an interrupted summary automatically. Auto summary HTTP usage belongs to the
-owning run; manual summary has its own audit/usage run.
-
-**Restart Emacs after updating from pre-F4 code:** session/run structures changed;
-do not hot-load the new structs into existing sessions. 227 offline ERT and
-warnings-as-errors compilation pass. The user exercised manual compaction;
-one isolated tool-free probe of the new framing on `aiserver/main` produced a
-structured summary, with a remaining factual error. This is not a full live
-lifecycle matrix or a guarantee of summary quality. See
-[ADR-0010](docs/adr/0010-pigo-style-compaction.md).
-
-### Reading live buffers (F0)
-
-Loading `emacs-agent` also loads three ordinary Lisp helpers, usable through
-`eval_elisp` without adding any model tools:
-
-```elisp
-(emacs-agent-buffer-info "example.el")
-(emacs-agent-read-lines "example.el" 14 20 :widen t)
-(emacs-agent-read-around "example.el" 367 :before 2 :after 2 :widen t)
-```
-
-Use an explicit live buffer or its exact name. Helpers read unsaved text and
-preserve point, mark, restrictions and windows. Lines are absolute, 1-based;
-columns are 0-based display columns (tabs expanded), positions are character
-positions. Empty lines count, including the last empty line after a newline.
-`line-beginning-position` takes a **relative** argument, not an absolute line.
-Without explicit `:widen t`, inaccessible or partially inaccessible lines are
-rejected, not silently clipped. Invalid ranges/positions and dead buffers fail.
-
-Results are plists with buffer metadata once and one literal `:text`, without
-numbering or per-line rows. Both reading helpers and `buffer-info` include
-`:total-lines`: the absolute whole-buffer line count, even under narrowing.
-An empty buffer has one line; a terminal newline adds an empty line. Bound
-requested END by this value rather than guessing EOF; it does not authorize
-reading outside narrowing. Return the read result intact to retain metadata;
-extract fields locally when consuming a result inside one eval. `:start`/exclusive `:end` are buffer positions;
-`:start-line`/`:end-line` are the lines of those positions (end may be at the
-next line's beginning after a returned newline). Internal newlines and empty
-lines are preserved; the newline after requested END is excluded. Around adds
-`:at` with coordinates and symbol at the supplied position. The old `:lines`
-format was removed in deep alpha, without a compatibility mode.
-`:limit` defaults to 4096 text characters; printed-output budgeting can reduce
-it further. On `:truncated t`, `:next-position` equals `:end`: resume with the
-same line range and `:from NEXT-POSITION :tick TICK` from the result, concatenating
-`:text` without adding separators, even if a chunk ends at/on a newline. Supplying an old modification
-tick fails after a text edit. Without an expected tick, a still-in-range old
-position cannot be identified as stale. Names can also be reused after a kill;
-these snapshots are not persistent identities or live markers.
-
-Use the helper as the sole final form, without stdout: its printed plist plus
-`=>` prefix is budgeted against `emacs-agent-eval-output-limit`. If metadata
-cannot fit, the helper errors rather than returning an incomplete plist.
-Wrapping the result or printing extra output can still trigger the evaluator's
-general truncation.
-
-### Full tool output (F3)
-
-`eval_elisp` still returns a plain string. If it exceeds
-`emacs-agent-eval-output-limit` (default 32768 characters), the full text is saved
-as UTF-8 in a unique 0600 file under `emacs-agent-data-directory/tool-output/`.
-The model receives a **tail** and a notice with the quoted absolute path. The
-notice counts toward the limit; if it alone exceeds the limit, it is returned
-intact without a tail. Exact-limit results do not create a file.
-
-This normally retains final `=> VALUE` / ERROR / QUIT after noisy stdout. A value
-that itself exceeds the tail can still be cut; the complete text is in the file.
-Use ordinary Elisp (`insert-file-contents` and buffer APIs) to inspect needed
-ranges; never load saved output as code. No new tool, helper or viewer is added.
-
-Write failure returns an explicit unavailable warning, never a partial-file
-reference, and **never repeats evaluation**. Files are private, not encrypted;
-there is no registry, automatic deletion or storage quota. Delete them manually.
-Removing/moving files can invalidate old references. Output is still collected
-in memory before saving; this is not a memory or execution limit.
-See [ADR-0009](docs/adr/0009-simple-full-tool-output.md).
-See [ADR-0001](docs/adr/0001-f0-buffer-helpers.md) for the contract.
-
-### Evaluation diagnostics
-
-Errors/quits keep their final `ERROR CONDITION: message` / `QUIT:` line and add
-read/eval phase, top-level form number and completed-form count. Locations use
-1-based **character** positions/lines and 0-based character columns (not bytes or
-display columns). Reader failures include a bounded escaped excerpt and, when
-available, a syntax-table hint for an open string/list. This is not a full parser
-explanation for every reader construct.
-
-Execution errors can include up to eight function names and a loaded function's
-signature, with generic argument names where necessary. Arguments/closure
-contexts are not dumped; unavailable or stale captures are not guessed. Capture
-uses a locally bound noninteractive debugger, never the user's debugger window.
-It is best effort; evaluated code can suppress/change debugger behavior.
-
-When the actual source buffer's net state changes, a compact footer shows its
-identity and changed fields as `(before after)` pairs. `:whole-characters` ignores
-narrowing. Rename/kill and modified-flag changes are visible too; **other buffers
-and external effects are not checked**. Read-only calls keep their old output.
-The footer follows successful `=> VALUE`; all text still passes through F3, so
-very small output budgets can cut diagnostics or the value (full text is retained
-when artifact saving succeeds).
-
-Forms still execute sequentially. A reader error does not undo earlier forms;
-an evaluation error may occur after mutations within that same form. There is
-**no rollback, automatic save or repeat**. Diagnostics preserve source point,
-restriction and undo; they do not repair the editor or certify saved-file equality.
-See [ADR-0016](docs/adr/0016-evaluation-error-diagnostics.md).
-
-### Text data without embedded Elisp string literals
-
-The same single tool accepts optional `texts`, a **JSON array of strings**:
-
-```json
-{
-  "expression": "(emacs-agent-replace-region \"test.ml\" 1 4 (nth 0 emacs-agent-texts) (nth 1 emacs-agent-texts) :tick 210)",
-  "texts": ["old", "let () = print_endline \"Привет\"\n"]
-}
-```
-
-Adapt target/range/tick to a fresh read. Text is escaped only for JSON, not again
-as a Lisp string literal inside `expression`. Quotes, Unicode, real newlines and
-literal `\\n` remain distinct; no unescaping, joining or evaluation is applied.
-`emacs-agent-texts` is a fresh list available during this invocation, across
-buffers and to **any** text helper/native Elisp function. Use `nth` for OLD/NEW or
-multiple batch replacements; helper signatures, guards and return formats stay
-unchanged. Omitted `texts` and `[]` bind an empty list. Explicit JSON null or a
-non-string array is rejected before execution; old expression-only calls work.
-
-The runtime list/strings are copies, so edits to them cannot modify original
-arguments/history. Nested calls have independent bindings; outer bindings are
-restored on success/error/quit/throw. Direct Lisp callers may pass a vector or
-proper list as the optional second argument to `emacs-agent-eval`. Unrestricted
-code can deliberately retain or evaluate data; this is not a sandbox or a secret
-channel. Payloads are retained as ordinary private tool arguments in logs/history,
-restored as inert data, included in budget/compaction and visible on expansion.
-See [ADR-0018](docs/adr/0018-scoped-text-payloads.md).
-
-### Editing live buffers with undo
-
-Prefer one exact-text batch through `eval_elisp`:
-
-```elisp
-(emacs-agent-replace-texts "example.el"
-  '((:old "unique old text" :new "replacement")
-    (:old "another unique fragment" :new "another replacement"))
-  :tick TICK)
-```
-
-Take TICK from a fresh read. Every nonempty OLD must match exactly once in the
-original accessible text, case-sensitively (overlapping occurrences also count).
-All ranges are validated before any edit; overlaps/duplicates fail, adjacency
-is allowed. Apply bottom-up regardless of list order: NEW text is never used
-to locate a later OLD. Empty NEW deletes; for insertion, include a unique OLD
-anchor in NEW. All replacements share one atomic undo step and one initial
-tick check, with rollback of the entire buffer edit on error. No manual offsets,
-per-edit tick updates or hand-written transaction wrappers are needed.
-
-Result: `:buffer`, final `:tick`, `:modified` and integer `:changed` (number of
-non-no-op edits), not full source/diff. An all-no-op batch preserves tick and
-undo. Normal hooks run; external hook side effects cannot be rolled back.
-
-For an explicit-coordinate replacement, the existing
-`(emacs-agent-replace-region BUFFER START END OLD NEW :tick TICK)` remains
-available. Positions are absolute characters, END exclusive. Supply
-exact OLD text and the modification tick from a fresh read. Empty OLD with
-START=END inserts; empty NEW deletes. `:widen t` explicitly permits editing
-outside narrowing. Dead buffers, stale text/tick, read-only buffers, disabled
-undo and external visited-file changes fail rather than being overridden.
-
-String indices (`substring`, `aref`, `string-match`) start at 0, unlike buffer
-positions. Index I in text captured from position BASE maps to BASE+I; for
-`buffer-string`, BASE is `point-min` at capture, not necessarily 1 when narrowed.
-Prefer positions from reading helpers. On OLD mismatch or stale tick, reread
-and recompute the range/text/tick; do not guess offsets or bypass the rejection
-with direct edits. Mismatch errors include range, tick and an escaped preview
-of up to 160 actual characters, explicitly marked if truncated. This is only
-diagnostic text, not permission to apply a replacement. The evaluator may
-further truncate errors under a small output limit.
-
-A replacement is atomic and one undo step, separate from existing user undo.
-Normal change hooks run; hook errors roll back the target buffer's text, not
-arbitrary external side effects. Point/mark and narrowing track the edit as
-Emacs markers. The small region-helper result reports `:buffer`, `:start`, exclusive new
-`:end`, `:tick`, `:modified` and `:changed`. Identical text is a no-op.
-
-Neither helper saves. When saving is intended, use
-`(with-current-buffer BUFFER (save-buffer))`. This saves the whole buffer,
-including pre-existing user modifications, and keeps undo, file timestamps,
-backups and save hooks working normally. A save failure leaves the buffer edit
-available for inspection and undo. Do not fake saving with
-`set-buffer-modified-p nil`: three-argument `write-region` does not update the
-visited-file timestamp and can cause a spurious reload warning. Do not use
-shell writes or `revert-buffer` as routine synchronization for visited files.
-
-The model receives these guidelines in its system prompt; unrestricted eval
-can still bypass them. Undo is subject to normal Emacs size limits and buffer
-lifetime, not persisted across restarts. See
-[ADR-0002](docs/adr/0002-buffer-native-editing.md).
-
-### Emacs Lisp structure and balanced editing
-
-Loading `emacs-agent` also loads `emacs-agent-sexps.el`. No paredit dependency
-or new model tool is needed. Through `eval_elisp`:
-
-```elisp
-(emacs-agent-check-sexps "example.el")
-(emacs-agent-inspect-sexps "example.el" :depth 2 :limit 32)
-(emacs-agent-replace-sexp "example.el" START END OLD NEW :tick TICK)
-```
-
-`check-sexps` returns a plist with `:ok`, `:forms-read`, and the first
-`:diagnostic`: absolute character `:position`, `:form-start`,
-`:reader-position`, 1-based `:line`, 0-based display `:column`, and bounded
-literal `:context`. EOF positions are syntax hints, not certain fixes.
-The Emacs Lisp reader checks matching delimiter types, strings, character
-literals and other reader syntax; forms are **not evaluated**. Reading uses
-an isolated symbol table, so source symbols are not globally interned and
-`#s(hash-table ...)` cannot invoke user-defined hash tests. Such records are
-read generically, without native constructor-specific checks.
-
-`inspect-sexps` returns a JSON string with `nodes` containing source ranges,
-`kind`, `complete`, bounded `preview`, `expandable` and requested `children`.
-It retains readable children of an incomplete form. Lists, vectors and quote
-prefixes expand; other reader constructs remain opaque leaves. Dotted-pair
-dots are syntax parts, not replaceable expressions. `:depth` (0..8, default 1)
-and `:limit` (1..1000 total nodes, default 64) bound output. `truncated` and
-`children-truncated` expose omissions; `next-position` resumes omitted
-**top-level** forms only. Explore a nested node by its explicit range and
-fresh tick. If JSON exceeds the evaluator budget, request fewer nodes/lower
-depth: it errors rather than emitting invalid partial JSON.
-
-Both readers accept optional `:start`, `:end`, `:tick`, `:widen`; default
-scope is the accessible buffer. A range is checked as a standalone fragment.
-Coordinates remain absolute even when narrowed. Live text/editor state is
-preserved; metadata includes buffer, tick and checked bounds.
-
-`replace-sexp` requires exact OLD, fresh integer TICK and a whole form's
-START..END from inspection. Nested forms are supported. NEW must be exactly
-one form without surrounding whitespace/comments, or empty to delete.
-The surrounding accessible buffer must remain valid too: deleting a dotted
-pair's tail, for example, is rejected even though NEW is empty.
-
-For an already broken buffer, use `:repair t`: START..END may be any nonempty
-range and NEW may contain arbitrary text/multiple forms. The **entire
-accessible buffer** must read successfully afterward, not only NEW. To insert
-a missing delimiter, include neighboring OLD text in the repair range.
-Narrowing explicitly limits this guarantee to a standalone fragment;
-`:widen t` checks the full buffer. Source-copy preflight rejects invalid
-candidates before editing; post-hook validation and the edit share one atomic
-rollback group. Existing OLD/tick/read-only/undo/disk-conflict guards remain.
-No automatic save; unrestricted eval can still bypass these helpers.
-Reader syntax validity is not proof of correct program behavior.
-See [ADR-0025](docs/adr/0025-sexp-helpers.md).
-
-### Checking edited code
-
-Use **edit → explicitly save when intended → check → reread changed ranges after
-the last check**. Distinguish edited, saved and checked in reports. Disk commands
-cannot validate unsaved buffer text; do not implicitly save/discard user changes
-just to run them. Active editor diagnostics may check unsaved text, but confirm
-which backend actually serves this buffer and whether its results are fresh.
-Loaded features or available commands alone do not prove working code checks;
-read minor-mode variables rather than activating modes to inspect their state.
-
-`emacs-agent-run-process` is a synchronous process helper usable inside
-`eval_elisp`: no shell wrapping, literal argv (list or vector of strings),
-combined stdout/stderr in a fresh disposable buffer, and a result with
-`:output`, `:directory` (expanded cwd), `:command` (actual program+argv) and
-`:exit` (integer or signal string; last key so tails keep status). Bare names
-use PATH lookup; paths with a directory component are expanded against
-`:directory`, fixing relative executable lookup; remote program names must use
-the same host. It never saves, edits, retries, cleans generated files or
-interprets success. Launch errors/quit propagate; no status is invented.
-Adapt program/args to the project and require **integer exit 0**, not empty
-output, before success claims. For long local checks use the async job helpers
-below. See [ADR-0019](docs/adr/0019-process-helper.md).
-
-`emacs-agent-replace-region` names the offending argument (START/END/OLD/NEW/
-:tick) with its actual value instead of a generic requirements list.
-
-EOF read errors now include the requested range and actual whole-buffer line
-count instead of silently clamping END. See [ADR-0017](docs/adr/0017-edit-save-check-workflow.md).
-
-### Local asynchronous jobs
-
-Ordinary helpers through `eval_elisp`, not extra model tools:
-
-```elisp
-(emacs-agent-job-start "make" ["test"] :directory "/path/to/project/") ; → job ID
-;; Substitute the returned string for ID in later calls:
-(emacs-agent-job-status ID)
-(emacs-agent-job-read ID :from 0 :limit 4096)
-(emacs-agent-job-list :from 0 :limit 20)
-(emacs-agent-job-cancel ID)
-(emacs-agent-job-forget ID) ; only after termination
-```
-
-Start returns immediately; literal argv, cwd-relative executables, local only
-(no TRAMP or implicit shell). UTF-8 stdout/stderr share a private output buffer.
-Status reports `running` / `exited` / `signaled` / `failed`, with integer `:exit`
-only for ordinary exit and `:signal` for signal termination. A cancellation
-request is not success, rollback or a guarantee of stopping descendants.
-
-Read returns bounded `:text`; resume with its zero-based character
-`:next-offset`. `:truncated nil` means only the end of output available **now**;
-`:complete t` additionally requires a terminal job. Reads do not wait or consume
-output. List returns a bounded page of `:jobs` metadata, newest first.
-
-No automatic polling, LLM continuation, save, retry, restart recovery or linkage
-to run cancellation. Jobs are shared across the current Emacs, not scoped access
-controls. Full output remains **in memory until forget/restart**; read limits do
-not bound memory usage. Forget removes only the terminal job's runtime record
-and output, not files created by the command. See
-[ADR-0022](docs/adr/0022-async-jobs.md).
-
-### Replay support boundary
-
-Currently supported: trusted **OpenAI Chat Completions** configurations using
-plain text, `eval_elisp` function calls and optional textual `reasoning` /
-`reasoning_content` on assistant tool messages. These fields are retained and
-restored to generated wire messages, along with original provider call IDs.
-Final answer reasoning without a tool call remains journal-only.
-
-Responses API, Anthropic, Gemini and other backend types fail before sending
-a request: their opaque reasoning/signature formats are not safely replayable
-through this gptel adapter. Observed unknown assistant/tool protocol fields,
-signatures, encrypted data or callback shapes also fail explicitly, before
-tool execution. That session receives a non-replayable history marker; future
-turns fail rather than silently omit unsupported data. There is no reset UI:
-archive the affected snapshot and restart, or start a fresh Emacs with a new
-data directory. Restarting alone intentionally retains the failure marker.
-
-This is not a universal detector for proprietary Chat extensions: upstream
-gptel can discard unrecognized streaming fields before exposing them. Use
-only endpoints whose protocol fits the stated support boundary; arbitrary
-OpenAI-compatible vendors with hidden/opaque requirements are not supported.
-Known textual tool reasoning is preserved; opaque blobs are not reconstructed.
-
-`M-x emacs-agent-cancel` cancels the active run in the current session and
-allows the next queued turn to start. Late callbacks are ignored; prior Lisp
-side effects remain. There are no automatic retries of network requests or
-side-effecting evaluations.
-
-`emacs-agent-max-tool-calls` defaults to 100. At the limit the run pauses before
-the next evaluation and holds pending continuations. `M-x emacs-agent-resume`
-grants another block of calls without restarting the request or reexecuting
-completed tools. Paused runs retain their session slot until resumed/cancelled.
-All tool evaluation is serialized across sessions, including during recursive
-Emacs event loops. Tools default to the live source buffer, or the run's
-transport if it died; windows and captured point/region are not restored.
-
-The editor is shared live state: the user can edit, undo/redo or save changes
-between tool calls. History/results describe past actions, not proof of current
-buffer or disk contents. Reinspect current state before continuing and preserve
-user changes. F7's separate execution ledger/durable dispatch gate was excluded;
-existing audit remains best-effort, with no automatic replay after interruption.
-See [ADR-0013](docs/adr/0013-interactive-editor-no-tool-ledger.md).
-
-## Conversations (F6)
-
-Multiple independent conversations share each project/global scope:
-
-- `M-x emacs-agent-session-new`: save the previous conversation and select an empty one;
-  `C-u` asks for an optional name.
-- `M-x emacs-agent-session-rename`: save a name; empty clears it. Names need not be unique.
-- `M-x emacs-agent-session-select`: choose a conversation **in the current scope**,
-  most recently active first. Entries look like `global#efb8d79950: first request…`:
-  short ID plus the original first user request, normalized to one line and clipped
-  to minibuffer width. Empty conversations show their name or `(empty)`. Prefix
-  collisions extend the short ID; full IDs remain accepted programmatically.
-  The short ID is the prefix of the conversation's own canonical
-  `session-<64hex>` ID, and the saved snapshot file is
-  `conversations/<same 64 hex>.eld`, so labels and on-disk names visibly
-  match (see [ADR-0021](docs/adr/0021-id-handle-file-name.md)).
-  Completion preserves activity order and does not save prompt previews in global
-  minibuffer history.
-- `M-x emacs-agent-session-search`: regexp search over local names/history/summary/events
-  across scopes, without a model, external artifact reads or an index.
-- `M-x emacs-agent-session-clone`: select an independent copy; `C-u` asks for a name.
-- `M-x emacs-agent-session-info-show`: read-only summary of the current
-  conversation: name/IDs/scope, created/updated, active run and pending
-  counts, source buffer liveness, history/compaction/provenance, usage anchor
-  and strict per-HTTP token totals, saved-file state. The underlying
-  `emacs-agent-session-info` (also callable from Elisp/`eval_elisp` with an
-  object or ID) returns the same data as a plist without side effects:
-  no model request, archive load, run, save or journal creation. Token totals
-  come from durable usage records and follow the usage accounting semantics
-  (gptel-normalized expenditure over requests, unknown stays unknown, the
-  in-flight request is not counted until it ends). See
-  [ADR-0020](docs/adr/0020-session-info.md).
-
-Journal labels include name, scope and a short conversation ID. In
-`emacs-agent-session-list`, `Current` marks the in-process scope selection.
-**RET only opens a journal; it does not select it.** Explicit new/select/clone
-focus the chosen journal. Commands in a nonselected
-journal explicitly target its owner; working buffers use their scope's selection.
-Ask captures an existing conversation before minibuffer entry, never retargeting
-silently if selection changes while typing.
-
-Each new Emacs process starts a **fresh global conversation** on first implicit
-use. Old F6 globals can be explicitly selected for that process, but are never
-implicitly restored next time. Project selections persist. Showing journals,
-listing/searching, or reloading the same package version does not create duplicate
-globals or select archives.
-
-New/select/clone require involved conversations idle: no active/paused run,
-ordinary queue, compaction or prepared/queued input. Withdrawn recovery may stay
-with its original conversation. Rename requires its target idle. Save/pointer
-failure leaves the old choice and history intact. A written candidate may remain
-unselected if pointer persistence fails. Explicit conversation operations save
-regardless of `emacs-agent-auto-save`; initial project identity/selection also
-persists even when chat autosave is off.
-
-Clone copies archival messages/events and compaction with source-ID provenance,
-not pending recovery, queues, usage anchor, source/backend/transport handles or
-execution authority. Historical tool IDs/reasoning stay paired; nothing executes.
-F3 paths remain references to the same original files. Invoking new/select/clone
-from a working buffer explicitly binds that buffer for future journal asks;
-cloning from an archive alone does not inherit its old execution source.
-
-**Restart Emacs after this update**, since struct/registry meanings changed.
-No migration: pre-F6 `global.eld` / `project-*.eld` stay untouched but do not appear
-in the F6 catalog. See [ADR-0012](docs/adr/0012-multiple-conversations.md).
-
-## Fork from history (F8)
-
-`M-x emacs-agent-session-fork` selects a completed turn and creates a separate
-conversation through that point. The newest eligible point is the default;
-`C-u` also asks for a name. A turn includes delivered steering and all its tool
-pairs; individual tool calls, failed/cancelled turns and active work are not
-fork endpoints. The source and other involved selections must be idle.
-
-After compaction, the **latest summary is the first logical event** in the
-picker. You can fork immediately after it (summary only) or after a completed
-retained turn, never inside the summarized prefix. The summarized raw records
-remain stored internally for existing history/protocol validation; the model
-sees only the inherited summary plus the chosen suffix. Summary-only forks show
-an inherited-summary entry, not the old raw journal. Other forks retain the
-chosen audit prefix, excluding future queued inputs and later events.
-
-The original is unchanged. The fork is selected and focused, with the same
-save-before-selection rules as clone. From a working buffer, that buffer is bound
-for subsequent asks. From a journal, the owner's last working buffer is bound if
-still live, so the fork can be continued immediately. A closed working buffer is
-never replaced by the journal or an arbitrary selected buffer; ask once from a
-working buffer to establish a new source. The core fork still copies no pending
-recovery, runtime handles or usage anchor. Changes during the boundary/name
-minibuffer cause an explicit retry rather than a silently different fork.
-**Buffers, files and processes are NOT rolled back; tools are never replayed.**
-Old F3 output paths still reference the same artifacts. No tree/bookmarks or
-extra summary generation is involved. See [ADR-0014](docs/adr/0014-minimal-fork-after-compaction.md).
+Views also have normal derived-mode hooks: `emacs-agent-log-mode-hook`,
+`emacs-agent-session-list-mode-hook` and `emacs-agent-pending-mode-hook`.
+`emacs-agent-status-mode-hook` observes toggling the global status mode.
 
 ## Persistence and recovery
 
-`emacs-agent-data-directory` defaults to `emacs-agent/` below
-`user-emacs-directory`, not the active project. **Schema 3** conversations use
-`conversations/<hash-of-conversation-id>.eld`; project pointers use
-`selections/<hash-of-root>.eld`. There is no persisted global selection.
-Files are read as Lisp **data**, never loaded/evaluated as code. Writes use a
-same-directory temporary file and atomic rename (new directories 0700, files
-0600). Schema 1/2 and old root-level snapshots are not read/imported or rewritten.
-Old files can stay in the data directory as untouched archives. F3 full-output
-files still use the separate `tool-output/` directory.
-No encryption is provided. If your Emacs directory is tracked in dotfiles,
-ignore this subdirectory or configure an untracked/private location.
+Snapshots live in `emacs-agent-data-directory`, not the project. Schema 3 uses
+`conversations/<64-hex-conversation-ID-suffix>.eld`; project selection pointers
+use `selections/<hash-of-root>.eld`. There is no persisted global selection.
+Files are read as Lisp **data**, never loaded/evaluated. Writes use a same-directory
+temporary file and atomic rename; new directories are 0700 and files 0600.
 
-`emacs-agent-auto-save` defaults to t. Meaningful events, tool boundaries,
-completion/cancellation and partial-response completion trigger checkpoints.
-Streaming deltas are checkpointed at most every five seconds. Explicit
-`M-x emacs-agent-save` saves the current session, including currently received
-partial text, without flushing/changing its live run. A renderer failure
-cannot suppress autosave; an autosave failure is reported but does not retry
-or terminate the model/tool loop. Persistence writes are synchronous I/O.
+Autosave checkpoints meaningful events, tool boundaries and completion/cancel;
+streaming checkpoints occur at most every five seconds. Explicit save includes
+received partial text without changing the live run. Save failures warn but do
+not retry or terminate the loop. I/O is synchronous. Streaming fragments are
+compacted in snapshot copies; model messages remain separate from journal events.
+Saving still traverses full history and is not a constant-time operation.
 
-F0b stores adjacent assistant/reasoning fragments as compact blocks in a
-**snapshot copy** only. Live events, incremental UI cursors and stream
-accumulators are unchanged; canonical model messages/protocol fields stay
-independent. Block text is concatenated literally, without crossing type/run,
-end/tool/status or unknown-metadata boundaries. Each block retains first
-`:id`/`:time`, `:last-id`/`:last-time` and `:state`. `complete` means an immediately
-following matching `*-end`, not a successful HTTP response: a flush on error
-or cancel also closes assistant text. Otherwise the block is conservatively
-`partial`, including earlier interleaved segments. Intermediate per-delta IDs
-and delivery times are intentionally not retained. Reasoning remains stored
-regardless of display policy. Restored blocks render directly, not as recreated
-token events, and new events can still be appended normally.
+After restart active/paused and queued work becomes interrupted. **Nothing is
+automatically resumed or reexecuted.** Results and partial text stay available;
+pending inputs require deliberate recovery. Side effects may exist even when a
+result was not checkpointed: inspect current editor/files/processes first.
+Only source buffer name/file identities reconnect to matching already-open
+buffers. No file is automatically opened; windows, processes, markers, closures,
+credentials and HTTP handles are not restored.
 
-Snapshots use fast per-record `prin1` serialization, not recursive pretty-print
-layout (newlines inside strings stay escaped).
-Synthetic fixture: 4,002 events become 4; a roughly 460 KB schema-1-style
-snapshot becomes 11 KB, about 42x smaller. This fixture has no model messages;
-real savings depend on the session's text/tools/history. Saving still copies
-and traverses the full live history; F0b does not promise lower UI memory use
-or a constant-time checkpoint. See [ADR-0003](docs/adr/0003-durable-streaming-blocks.md).
+Catalog refresh never overwrites in-memory conversations. Corrupt/unsupported
+files do not block unrelated catalog entries, but direct restoration of a bad
+selected target fails explicitly rather than substituting an empty conversation.
+Schema 1/2 and old root-level `global.eld`/`project-*.eld` files are not imported,
+rewritten or shown in the current catalog. There is no migration/reset UI: use a
+separate data directory or manually archive incompatible files. Restart after
+updates that change session/run structures rather than hot-loading them into
+live sessions.
 
-`M-x emacs-agent-session-list` loads independent snapshots and shows sessions;
-`RET` opens a read-only journal, `g` refreshes. Asking/showing from a project
-lazily restores its selected conversation; global starts fresh in each process.
-Catalog loading only registers conversations, never selects them. Existing
-in-memory conversations are never overwritten by a disk refresh. Backend/model are chosen
-from the current gptel configuration on each new run; stored settings are
-an audit, not code that alters user configuration.
+Snapshots and output files are private but **unencrypted**, can contain secrets,
+and have no automatic quota/deletion. Keep the directory out of dotfiles/version
+control. Concurrent writers from multiple Emacs processes are unsupported (last
+rename wins). Transport-buffer reclamation is not automatic.
 
-After restart, active/paused and queued tasks become `interrupted` events.
-**Nothing is automatically resumed or reexecuted.** Completed results and
-partial text remain in history. Pending user text is retained in the journal,
-not silently submitted to the model; copy/resubmit it deliberately. Already
-performed effects may remain even when a result was not checkpointed. Inspect
-interrupted runs before requesting continuation.
+## Supported backends and limitations
 
-Only source buffer name/file identities are saved. They reconnect to matching
-already-open buffers when available, otherwise remain unavailable. No file is
-automatically opened; no buffer/window/process/marker/closure/backend credential
-object or HTTP handle is restored.
+Supported: trusted OpenAI **Chat Completions** with plain text, `eval_elisp`
+function calls and optional textual `reasoning`/`reasoning_content` on assistant
+tool messages. Original tool IDs and known textual reasoning are retained for
+replay. Final-answer reasoning without tools remains journal-only.
 
-A corrupt/unsupported file in the new namespace does not prevent other
-conversations from loading. Direct selected-target restore fails explicitly;
-it is not silently replaced with an empty session. Unsupported files inside the
-new namespace require a separate data directory or manually archiving the file;
-there is no compatibility reader or migration command. Snapshots are plaintext and can contain secrets
-from prompts, reasoning and tool results; do not publish them. Concurrent
-writers from multiple Emacs processes are not supported (last rename wins).
-Transport-buffer reclamation is still not automatic.
+Responses API, Anthropic, Gemini and other backend types fail before sending:
+opaque reasoning/signature formats cannot be safely replayed by this adapter.
+Observed unknown protocol fields/callback shapes fail explicitly before tool
+execution and mark history non-replayable. Future turns remain blocked, including
+after restart; archive that snapshot/use a fresh conversation or data directory.
+Upstream gptel can discard unknown streaming fields before exposure, so this is
+not a universal detector for proprietary extensions. Endpoints requiring hidden
+or opaque fields are unsupported.
 
-## Long prompts
-
-The tested Emacs has no built-in `edit-minibuffer`/`minibuffer-edit` command,
-so no fictitious `C-M-c` binding is installed. A dependency-free standard
-workflow is to compose/edit the prompt in an ordinary draft buffer, copy it
-with `M-w`, switch to the intended working buffer, invoke `emacs-agent-ask`,
-then `C-y` and `RET`. Multiline text is retained; context comes from the working
-buffer, not the draft. Existing minibuffer-editing extensions can also use
-normal minibuffer hooks/keymaps; the agent does not supply a custom editor.
-
-## Test
-
-Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 421 ERT tests; it uses mocks and dry-run requests, not API
-keys. Stage 1 modules do not require gptel and can be tested independently:
-
-```sh
-emacs -Q --batch -L . -l test/emacs-agent-session-test.el \
-  -l test/emacs-agent-context-test.el -f ert-run-tests-batch-and-exit
-```
-
-```sh
-nix-shell -p gnumake --run 'make clean test compile'
-# Or with make already available:
-make ELPA=/path/to/elpa test compile
-```
+The editor is shared live state: you can edit, undo or save between calls.
+History describes past actions, not proof of current buffer/disk contents.
+Reinspect before continuing and preserve user changes. Audit is best effort,
+not an exactly-once execution ledger.
 
 ## Security
 
 Only connect to a trusted endpoint. `eval_elisp` can read secrets, execute shell
-commands, modify editor configuration and delete files without confirmation.
-Lisp executes synchronously and can block Emacs. Cancellation does not roll
-back changes or guarantee termination of subprocesses. Saved history has no
-separate encryption; protect the data directory and backups.
+commands, change editor configuration and delete files **without confirmation**.
+Instruction files, context, prompts and tool output are sent to the configured
+model. Project scoping, registered helpers and payload bindings are not security
+boundaries. Lisp executes synchronously and can block Emacs. Cancellation ignores
+late callbacks but does not roll back changes or guarantee termination of Lisp
+or subprocesses. Protect saved history and full-output files accordingly.
