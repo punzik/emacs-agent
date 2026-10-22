@@ -947,6 +947,17 @@ warning visibility in both journal and view.
 No new real-provider F1 smoke was run; these are offline tests, not live HTTP.
 See [ADR-0005](adr/0005-root-project-instructions.md).
 
+ADR-0023 extends this with optional root `EMACSAGENT.md`, captured after the
+common AGENTS/CLAUDE candidate and appended after it in the system prompt.
+It works independently, even if the common file is absent, empty or unreadable;
+each file's errors remain visible without suppressing the other's text.
+`:emacsagent` holds its separate frozen snapshot, validated in durable pending
+data. Opt-out disables both; journal/view include both paths, warnings and
+captured texts. No extra discovery outside the root or new model tools.
+406 ERT and strict compilation include ordered wire delivery, standalone and
+error cases, frozen FIFO/tool continuation and restore/view without rereading.
+No real-provider or live user-Emacs calls.
+
 ## Post-MVP F0b: durable streaming blocks (schema 2)
 
 The F0b milestone wrote **schema 2** (F6 now writes schema 3 in a new namespace),

@@ -2,7 +2,7 @@
 
 **Статус:** F0, F0b, F0c, ограниченный F1, lifecycle/UI F2, минимальный F3, F4, F6 и минимальный F8 реализованы; F5 отложен; F7 исключён;
 инструментированные live F2/F4 smoke ещё отдельно. Устранён измеренный секундный pretty-print
-autosave stall. 402 offline ERT и byte compilation с
+autosave stall. 406 offline ERT и byte compilation с
 warnings-as-errors проходят. Для буферного редактирования F0 есть пользовательский
 live smoke и подтверждение undo; отдельный live smoke F0b ещё не выполнялся.
 Остальные post-MVP этапы не реализованы.
@@ -879,6 +879,14 @@ bounded output с character offsets и ручное управление по ru
 гарантируется. Полный output хранится в памяти до forget/restart; bounded
 read не является memory limit. 402 ERT и strict compile проходят; provider/live
 user-Emacs smoke не выполнялся. Тесты и verification — в ADR-0022.
+
+### Специфичные инструкции EMACSAGENT.md (ADR-0023)
+
+После выбранного общего AGENTS/CLAUDE-файла независимо читается необязательный
+`EMACSAGENT.md` из корня проекта. Порядок в system prompt: общий файл, затем
+специфичный. Standalone тоже работает; opt-out отключает оба. Ошибки каждого
+видимы отдельно. Оба текста frozen при submission, сохраняются и показываются
+без перечитывания. 406 ERT и strict compile; live smoke не выполнялся.
 
 ## 6. Следующие кандидаты, но не обязательства текущего плана
 

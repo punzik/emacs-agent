@@ -48,6 +48,24 @@ Includes text, context and instructions, not backend objects or credentials."
                (error "Unknown or duplicate pending input field"))
              (push key seen))))
 
+(defun emacs-agent-input--validate-instructions (instructions &optional agent-file)
+  "Validate an instruction snapshot INSTRUCTIONS without reading any file.
+AGENT-FILE validates the leaf EMACSAGENT.md snapshot, forbidding nesting."
+  (emacs-agent-input--fields
+   instructions (if agent-file '(:status :root :path :text :warnings)
+                  '(:status :root :path :text :warnings :emacsagent)))
+  (unless (and (memq (plist-get instructions :status) '(loaded missing disabled no-project error))
+               (or (null (plist-get instructions :root)) (stringp (plist-get instructions :root)))
+               (or (null (plist-get instructions :path)) (stringp (plist-get instructions :path)))
+               (if (eq (plist-get instructions :status) 'loaded)
+                   (stringp (plist-get instructions :text))
+                 (null (plist-get instructions :text)))
+               (proper-list-p (plist-get instructions :warnings))
+               (cl-every #'stringp (plist-get instructions :warnings)))
+    (error "Malformed input instructions"))
+  (when-let* ((agent (plist-get instructions :emacsagent)))
+    (emacs-agent-input--validate-instructions agent t)))
+
 (defun emacs-agent-input-validate-data (data)
   "Validate durable input DATA without resolving or executing anything."
   (emacs-agent-input--fields data '(:id :kind :state :target-id :reason :run))
@@ -82,16 +100,7 @@ Includes text, context and instructions, not backend objects or credentials."
                    (or (null (plist-get source :file)) (stringp (plist-get source :file))))
         (error "Malformed input source")))
     (when-let* ((instructions (plist-get run :instructions)))
-      (emacs-agent-input--fields instructions '(:status :root :path :text :warnings))
-      (unless (and (memq (plist-get instructions :status) '(loaded missing disabled no-project error))
-                   (or (null (plist-get instructions :root)) (stringp (plist-get instructions :root)))
-                   (or (null (plist-get instructions :path)) (stringp (plist-get instructions :path)))
-                   (if (eq (plist-get instructions :status) 'loaded)
-                       (stringp (plist-get instructions :text))
-                     (null (plist-get instructions :text)))
-                   (proper-list-p (plist-get instructions :warnings))
-                   (cl-every #'stringp (plist-get instructions :warnings)))
-        (error "Malformed input instructions"))))
+      (emacs-agent-input--validate-instructions instructions)))
   data)
 
 (defun emacs-agent-input-restore (data session)

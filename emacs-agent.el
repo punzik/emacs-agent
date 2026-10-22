@@ -191,7 +191,7 @@ The view includes the selected path, status and any loading warnings."
           (insert (format "Instructions snapshot for %s\nRoot: %S\n%s\n\n"
                           run-id (plist-get snapshot :root)
                           (emacs-agent-resources-summary snapshot)))
-          (insert (or (plist-get snapshot :text) ""))
+          (insert (emacs-agent-resources-system "" snapshot))
           (goto-char (point-min)))
         (special-mode)
         (setq-local emacs-agent-session--owner session)

@@ -200,8 +200,11 @@ when the journal is reopened. See [ADR-0006](docs/adr/0006-final-response-echo.m
 
 ### Project instructions (F1)
 
-New inputs read **one saved file from the project root only**, in this order:
+New inputs read **one common saved file from the project root only**, in this order:
 `AGENTS.override.md` → `AGENTS.md` → `AGENTS.MD` → `CLAUDE.md` → `CLAUDE.MD`.
+Then **`EMACSAGENT.md`** from the same root is appended as agent-specific
+instructions. It is optional and also works without a common file. Each file
+has its own path heading; errors in one do not suppress the other.
 There is no global/parent/nested-directory discovery and no template support.
 An empty higher-priority file still wins. A selected unreadable/bad file logs
 warnings and contributes no instructions; it does not silently fall back.
@@ -216,12 +219,13 @@ The snapshot is appended to the current run's system prompt, independently of
 or running do not replace it. Earlier snapshots stay in audit, not API history.
 Instruction files never execute Lisp or configure gptel.
 
-Set `emacs-agent-project-instructions` to nil to opt out for new submissions;
+Set `emacs-agent-project-instructions` to nil to opt out of both files for new submissions;
 `setq-local` in a source buffer provides a local opt-out. The journal shows
 status/path/warnings. `M-x emacs-agent-show-instructions` shows the **captured**
 text for the active run, or the last submitted snapshot if idle, without
 rereading disk. Restored snapshots remain inspectable; nothing resumes itself.
-See [ADR-0005](docs/adr/0005-root-project-instructions.md).
+See [ADR-0005](docs/adr/0005-root-project-instructions.md) and
+[ADR-0023](docs/adr/0023-emacsagent-instructions.md).
 
 ### Model I/O efficiency (F0c)
 
@@ -796,7 +800,7 @@ normal minibuffer hooks/keymaps; the agent does not supply a custom editor.
 ## Test
 
 Requires Emacs and the gptel revision documented above in an ELPA directory.
-The full suite has 402 ERT tests; it uses mocks and dry-run requests, not API
+The full suite has 406 ERT tests; it uses mocks and dry-run requests, not API
 keys. Stage 1 modules do not require gptel and can be tested independently:
 
 ```sh
