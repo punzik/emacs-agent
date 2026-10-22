@@ -27,6 +27,36 @@
 (defun emacs-agent-test-store--write (file data)
   (with-temp-buffer (insert data) (write-region (point-min) (point-max) file nil 'silent)))
 
+(ert-deftest emacs-agent-store-reader-never-calls-custom-hash-tests ()
+  (emacs-agent-test-store
+    (let ((file (expand-file-name "reader.eld" emacs-agent-data-directory))
+          (properties (copy-sequence (symbol-plist 'emacs-agent-test-store-hash)))
+          calls)
+      (unwind-protect
+          (progn
+            (define-hash-table-test 'emacs-agent-test-store-hash #'equal
+              (lambda (key) (push key calls) (sxhash key)))
+            (dolist (text '("#s(hash-table test emacs-agent-test-store-hash data (\"payload\" 1))"
+                            "(:payload [#s(hash-table test emacs-agent-test-store-hash data (\"nested\" 1))])"
+                            "#s(hash-table test equal data (\"key\" 1))"))
+              (emacs-agent-test-store--write file text)
+              (should-error (emacs-agent-store--read file))
+              (should-not calls)))
+        (setplist 'emacs-agent-test-store-hash properties)))))
+
+(ert-deftest emacs-agent-store-reader-restores-symbols-and-rejects-closures ()
+  (emacs-agent-test-store
+    (let ((file (expand-file-name "reader.eld" emacs-agent-data-directory))
+          (data '(:state queued :scope global :flags [nil t :json-false]
+                  :name store-test-name)))
+      (emacs-agent-test-store--write file (prin1-to-string data))
+      (let ((read-symbol-shorthands '(("store-test-" . "unexpected-"))))
+        (should (equal (emacs-agent-store--read file) data)))
+      (dolist (text '("(lambda () 1)" "(:value [(lambda () 1)])"
+                      "#1=(:cycle #1#)" "(:ok t) (:trailing t)"))
+        (emacs-agent-test-store--write file text)
+        (should-error (emacs-agent-store--read file))))))
+
 (ert-deftest emacs-agent-store-roundtrip-and-lazy-project-mapping ()
   (emacs-agent-test-store
     (let* ((root "/tmp/same-name/project/")

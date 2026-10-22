@@ -49,21 +49,34 @@ validation and stored :id remain the full ID."
   (expand-file-name (concat "selections/" (secure-hash 'sha256 root) ".eld")
                     emacs-agent-data-directory))
 
-(defun emacs-agent-store--data (value &optional ancestors depth)
+(defun emacs-agent-store--data (value &optional ancestors depth intern-symbols)
   "Copy serializable VALUE, stripping properties and rejecting live objects.
-Reject cycles/closures instead of hanging or printing unreadable #<...> data."
+Reject cycles/closures instead of hanging or printing unreadable #<...> data.
+INTERN-SYMBOLS restores normal symbol identity after isolated snapshot reading."
   (when (> (or depth 0) 200) (error "Session data is too deeply nested"))
   (cond
    ((stringp value) (substring-no-properties value))
-   ((or (null value) (numberp value) (symbolp value)) value)
+   ((symbolp value) (if intern-symbols
+                        (let ((read-symbol-shorthands nil)) (intern (symbol-name value)))
+                      value))
+   ((numberp value) value)
    ((or (consp value) (vectorp value))
     (when (or (memq value ancestors) (and (consp value) (functionp value)))
       (error "Session data contains a cycle or closure"))
-    (let ((parents (cons value ancestors)) (level (1+ (or depth 0))))
-      (if (vectorp value)
-          (apply #'vector (mapcar (lambda (item) (emacs-agent-store--data item parents level)) value))
-        (unless (proper-list-p value) (error "Session data contains a non-list cons"))
-        (mapcar (lambda (item) (emacs-agent-store--data item parents level)) value))))
+    (let* ((parents (cons value ancestors)) (level (1+ (or depth 0)))
+           (copy
+            (if (vectorp value)
+                (vconcat (mapcar (lambda (item)
+                                  (emacs-agent-store--data item parents level intern-symbols))
+                                value))
+              (unless (proper-list-p value) (error "Session data contains a non-list cons"))
+              (mapcar (lambda (item)
+                        (emacs-agent-store--data item parents level intern-symbols))
+                      value))))
+      ;; An isolated `lambda' symbol acquires its function meaning only here.
+      (when (and (consp copy) (functionp copy))
+        (error "Session data contains a cycle or closure"))
+      copy))
    (t (error "Session data contains a live or unsupported object"))))
 
 (defun emacs-agent-store--source (buffer)
@@ -406,10 +419,15 @@ live list.  Durable snapshots require complete, consistent block metadata."
     ;; Match the writer: NUL in literal data must not trigger binary detection.
     (let ((coding-system-for-read 'utf-8-unix)) (insert-file-contents file))
     (goto-char (point-min))
-    (let ((value (read (current-buffer))))
+    (let ((value (let ((obarray (make-vector 151 0))
+                       (read-symbol-shorthands nil))
+                   ;; Native hash-table reader syntax can call registered hash
+                   ;; tests.  Isolated symbols instead produce inert records,
+                   ;; which `--data' rejects before restoring symbol identity.
+                   (read (current-buffer)))))
       (forward-comment (point-max))
       (unless (eobp) (error "Trailing data in session file"))
-      (emacs-agent-store--data value))))
+      (emacs-agent-store--data value nil nil t))))
 
 (defun emacs-agent-store--restore (file &optional root id)
   "Validate FILE, then register an idle session without selecting it.
